@@ -24,6 +24,126 @@
 #include "xfrd.h"
 #include "xfrd-disk.h"
 #include "util.h"
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+SSL_CTX*
+create_context()
+{
+    const SSL_METHOD *method;
+    SSL_CTX *ctx;
+
+    // if using openssl < 1.1.0
+//    method = SSLv23_server_method();
+
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL ctxt"));
+    }
+    return ctx;
+}
+
+void configure_context(SSL_CTX *ctx)
+{
+    // Only trust 1.3
+//    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+
+    SSL_CTX_set_ecdh_auto(ctx, 1);
+    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
+
+    /* Set the key and cert */
+    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0 ) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void* create_ssl_fd(void* ssl_ctx, int fd)
+{
+//#ifdef HAVE_SSL
+    SSL* ssl = SSL_new((SSL_CTX*)ssl_ctx);
+    if(!ssl) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL ctxt"));
+        return NULL;
+    }
+    SSL_set_connect_state(ssl);
+    (void)SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
+    if(!SSL_set_fd(ssl, fd)) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to set SSL_set_fd"));
+        SSL_free(ssl);
+        return NULL;
+    }
+    return ssl;
+//#else
+//    (void)sslctx; (void)fd;
+//	return NULL;
+//#endif
+}
+
+/** setup SSL for comm point */
+static int
+setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
+{
+
+    // should this be tcp_r fd or both?
+    tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
+    if(!tp->ssl) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** cannot create SSL object"));
+        return 0;
+    }
+    tp->ssl_shake_state = ssl_shake_write;
+
+//#ifdef HAVE_SSL_SET1_HOST
+    SSL_set_verify(tp->ssl, SSL_VERIFY_NONE, NULL);
+    if(!SSL_set1_host(tp->ssl, NULL)) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL_set1_host failed"));
+        return 0;
+    }
+
+//
+//    if () {
+//		/* because we set SSL_VERIFY_PEER, in netevent in
+//		 * ssl_handshake, it'll check if the certificate
+//		 * verification has succeeded */
+//		/* SSL_VERIFY_PEER is set on the sslctx */
+//		/* and the certificates to verify with are loaded into
+//		 * it with SSL_load_verify_locations or
+//		 * SSL_CTX_set_default_verify_paths */
+//		/* setting the hostname makes openssl verify the
+//		 * host name in the x509 certificate in the
+//		 * SSL connection*/
+//		if(!SSL_set1_host(cp->ssl, host)) {
+//			log_err("SSL_set1_host failed");
+//			return 0;
+//		}
+//	}
+//#elif defined(HAVE_X509_VERIFY_PARAM_SET1_HOST)
+//    /* openssl 1.0.2 has this function that can be used for
+//	 * set1_host like verification */
+//	if((SSL_CTX_get_verify_mode(outnet->sslctx)&SSL_VERIFY_PEER)) {
+//		X509_VERIFY_PARAM* param = SSL_get0_param(cp->ssl);
+//#  ifdef X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS
+//		X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+//#  endif
+//		if(!X509_VERIFY_PARAM_set1_host(param, host, strlen(host))) {
+//			log_err("X509_VERIFY_PARAM_set1_host failed");
+//			return 0;
+//		}
+//	}
+//#else
+//    (void)host;
+//#endif /* HAVE_SSL_SET1_HOST */
+    return 1;
+}
+
+
+
 
 /* sort tcppipe, first on IP address, for an IPaddresss, sort on num_unused */
 static int
@@ -57,14 +177,16 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	tcp_set->tcp_count = 0;
 	tcp_set->tcp_waiting_first = 0;
 	tcp_set->tcp_waiting_last = 0;
+	// Set up SSL Context
+	tcp_set->ssl_ctx = create_context();
 	for(i=0; i<XFRD_MAX_TCP; i++)
-		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region);
+		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region, tcp_set);
 	tcp_set->pipetree = rbtree_create(region, &xfrd_pipe_cmp);
 	return tcp_set;
 }
 
 struct xfrd_tcp_pipeline*
-xfrd_tcp_pipeline_create(region_type* region)
+xfrd_tcp_pipeline_create(region_type* region, struct xfrd_tcp_set* tcp_set)
 {
 	int i;
 	struct xfrd_tcp_pipeline* tp = (struct xfrd_tcp_pipeline*)
@@ -75,6 +197,16 @@ xfrd_tcp_pipeline_create(region_type* region)
 		tp->unused[i] = (uint16_t)i;
 	tp->tcp_r = xfrd_tcp_create(region, QIOBUFSZ);
 	tp->tcp_w = xfrd_tcp_create(region, 512);
+
+//    if(ssl) {
+    if(!setup_ssl(tp, tcp_set)) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Cannot setup SSL on pipeline"));
+//        xfrd_tcp_pipe_release(xfrd->tcp_set, tp, -1);
+    } else {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL setup successfully!"));
+    }
+//    }
+
 	return tp;
 }
 
@@ -142,7 +274,7 @@ xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_storage *to)
 xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_in *to)
 #endif /* INET6 */
 {
-	unsigned int port = acl->port?acl->port:(unsigned)atoi(TCP_PORT);
+	unsigned int port = acl->port?acl->port:(unsigned)atoi(TLS_PORT);
 #ifdef INET6
 	return xfrd_acl_sockaddr(acl, port, to);
 #else
@@ -301,7 +433,8 @@ static void
 xfrd_tcp_pipe_stop(struct xfrd_tcp_pipeline* tp)
 {
 	int i, conn = -1;
-	assert(tp->num_unused < ID_PIPE_NUM); /* at least one 'in-use' */
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** num unused %d, num skip %d", tp->num_unused, tp->num_skip));
+    assert(tp->num_unused < ID_PIPE_NUM); /* at least one 'in-use' */
 	assert(ID_PIPE_NUM - tp->num_unused > tp->num_skip); /* at least one 'nonskip' */
 	/* need to retry for all the zones connected to it */
 	/* these could use different lists and go to a different nextmaster*/
@@ -486,6 +619,135 @@ xfrd_tcp_obtain(struct xfrd_tcp_set* set, xfrd_zone_type* zone)
 	xfrd_unset_timer(zone);
 }
 
+//int
+//xfrd_tcp_open_ssl(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
+//              xfrd_zone_type* zone)
+//{
+//    int fd, family, conn;
+//    struct timeval tv;
+//    assert(zone->tcp_conn != -1);
+//
+//    /* if there is no next master, fallback to use the first one */
+//    /* but there really should be a master set */
+//    if(!zone->master) {
+//        zone->master = zone->zone_options->pattern->request_xfr;
+//        zone->master_num = 0;
+//    }
+//
+//    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: SSL zone %s open tcp conn to %s",
+//            zone->apex_str, zone->master->ip_address_spec));
+//    tp->tcp_r->is_reading = 1;
+//    tp->tcp_r->total_bytes = 0;
+//    tp->tcp_r->msglen = 0;
+//    buffer_clear(tp->tcp_r->packet);
+//    tp->tcp_w->is_reading = 0;
+//    tp->tcp_w->total_bytes = 0;
+//    tp->tcp_w->msglen = 0;
+//    tp->connection_established = 0;
+//
+//    if(zone->master->is_ipv6) {
+//#ifdef INET6
+//        family = PF_INET6;
+//#else
+//        xfrd_set_refresh_now(zone);
+//		return 0;
+//#endif
+//    } else {
+//        family = PF_INET;
+//    }
+//    fd = socket(family, SOCK_STREAM, IPPROTO_TCP);
+//
+//    BIO *web, *out = NULL;
+//    long res = 1;
+//    if (!(web = BIO_new_ssl_connect(set->ssl_ctx)))
+//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO new ssl connect failed"));
+//    BIO_set_conn_hostname(web, "69.172.188.13:853"); // hardcoded
+//
+//    BIO_get_ssl(web, &tp->ssl);
+//    if(!(tp->ssl != NULL))
+//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO BIO_get_ssl failed"));
+//
+//    out = BIO_new_fp(stdout, BIO_NOCLOSE);
+//    if(!(NULL != out))
+//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO BIO_new_fp failed"));
+//
+//    res = BIO_do_connect(web);
+//    if(!(1 == res))
+//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO do connect failed"));
+//
+//    res = BIO_do_handshake(web);
+//    if(!(1 == res))
+//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO do handshake failed"));
+//
+//
+//
+//    if(fd == -1) {
+//        /* squelch 'Address family not supported by protocol' at low
+//         * verbosity levels */
+//        if(errno != EAFNOSUPPORT || verbosity > 2)
+//            log_msg(LOG_ERR, "xfrd: %s cannot create tcp socket: %s",
+//                    zone->master->ip_address_spec, strerror(errno));
+//        xfrd_set_refresh_now(zone);
+//        return 0;
+//    }
+//    if(fcntl(fd, F_SETFL, O_NONBLOCK) == -1) {
+//        log_msg(LOG_ERR, "xfrd: fcntl failed: %s", strerror(errno));
+//        close(fd);
+//        xfrd_set_refresh_now(zone);
+//        return 0;
+//    }
+//
+//    if(xfrd->nsd->outgoing_tcp_mss > 0) {
+//#if defined(IPPROTO_TCP) && defined(TCP_MAXSEG)
+//        if(setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG,
+//                      (void*)&xfrd->nsd->outgoing_tcp_mss,
+//                      sizeof(xfrd->nsd->outgoing_tcp_mss)) < 0) {
+//            log_msg(LOG_ERR, "xfrd: setsockopt(TCP_MAXSEG)"
+//                             "failed: %s", strerror(errno));
+//        }
+//#else
+//        log_msg(LOG_ERR, "setsockopt(TCP_MAXSEG) unsupported");
+//#endif
+//    }
+//
+//    tp->ip_len = xfrd_acl_sockaddr_to(zone->master, &tp->ip);
+//
+//    /* bind it */
+//    if (!xfrd_bind_local_interface(fd, zone->zone_options->pattern->
+//            outgoing_interface, zone->master, 1)) {
+//        close(fd);
+//        xfrd_set_refresh_now(zone);
+//        return 0;
+//    }
+//
+//    conn = connect(fd, (struct sockaddr*)&tp->ip, tp->ip_len);
+//    if (conn == -1 && errno != EINPROGRESS) {
+//        log_msg(LOG_ERR, "xfrd: connect %s failed: %s",
+//                zone->master->ip_address_spec, strerror(errno));
+//        close(fd);
+//        xfrd_set_refresh_now(zone);
+//        return 0;
+//    }
+//    tp->tcp_r->fd = fd;
+//    tp->tcp_w->fd = fd;
+//
+//    /* set the tcp pipe event */
+//    if(tp->handler_added)
+//        event_del(&tp->handler);
+//    memset(&tp->handler, 0, sizeof(tp->handler));
+//    event_set(&tp->handler, fd, EV_PERSIST|EV_TIMEOUT|EV_READ|EV_WRITE,
+//              xfrd_handle_tcp_pipe, tp);
+//    if(event_base_set(xfrd->event_base, &tp->handler) != 0)
+//        log_msg(LOG_ERR, "xfrd tcp: event_base_set failed");
+//    tv.tv_sec = set->tcp_timeout;
+//    tv.tv_usec = 0;
+//    if(event_add(&tp->handler, &tv) != 0)
+//        log_msg(LOG_ERR, "xfrd tcp: event_add failed");
+//    tp->handler_added = 1;
+//    return 1;
+//}
+
+
 int
 xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	xfrd_zone_type* zone)
@@ -554,7 +816,10 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 
 	tp->ip_len = xfrd_acl_sockaddr_to(zone->master, &tp->ip);
 
-	/* bind it */
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, about to bind"));
+
+
+    /* bind it */
 	if (!xfrd_bind_local_interface(fd, zone->zone_options->pattern->
 		outgoing_interface, zone->master, 1)) {
 		close(fd);
@@ -570,6 +835,28 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		xfrd_set_refresh_now(zone);
 		return 0;
 	}
+
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, trying to do SSL connect"));
+
+    BIO *sbio = BIO_new_socket(fd,BIO_NOCLOSE);
+    SSL_set_bio(tp->ssl,sbio,sbio);
+    int ret, err;
+    while(1) {
+        ERR_clear_error();
+        if( (ret=SSL_do_handshake(tp->ssl)) == 1)
+            break;
+//        if
+        err = SSL_get_error(tp->ssl, ret);
+        if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL connect failed in tcp open with return value %d", err));
+            return 0;
+        }
+        /* else wants to be called again */
+    }
+
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL handshake worked!"));
+
+
 	tp->tcp_r->fd = fd;
 	tp->tcp_w->fd = fd;
 
@@ -637,6 +924,94 @@ tcp_conn_ready_for_reading(struct xfrd_tcp* tcp)
 	tcp->total_bytes = 0;
 	tcp->msglen = 0;
 	buffer_clear(tcp->packet);
+}
+
+int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
+{
+    ssize_t sent;
+    int res;
+
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in conn_write_ssl"));
+
+    if(tcp->total_bytes < sizeof(tcp->msglen)) {
+        uint16_t sendlen = htons(tcp->msglen);
+
+        // send
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL sending write"));
+        int request_length = sizeof(tcp->msglen) - tcp->total_bytes;
+        sent = SSL_write(ssl,
+                          (const char*)&sendlen + tcp->total_bytes,
+                          request_length);
+
+
+        switch(SSL_get_error(ssl,sent)) {
+            case SSL_ERROR_NONE:
+                if(request_length != sent)
+                    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Incomplete write in conn_write_ssl"));
+                break;
+            default:
+                DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** generic write problem in conn_write_ssl"));
+        }
+
+        if(sent == -1) {
+            if(errno == EAGAIN || errno == EINTR) {
+                /* write would block, try later */
+                return 0;
+            } else {
+                return -1;
+            }
+        }
+
+        tcp->total_bytes += sent;
+        if(sent > (ssize_t)sizeof(tcp->msglen))
+            buffer_skip(tcp->packet, sent-sizeof(tcp->msglen));
+        if(tcp->total_bytes < sizeof(tcp->msglen)) {
+            /* incomplete write, resume later */
+            return 0;
+        }
+        assert(tcp->total_bytes >= sizeof(tcp->msglen));
+    }
+
+    assert(tcp->total_bytes < tcp->msglen + sizeof(tcp->msglen));
+
+    int request_length = buffer_remaining(tcp->packet);
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL sending another write"));
+
+    sent = SSL_write(ssl,
+                     buffer_current(tcp->packet),
+                     request_length);
+
+
+    switch(SSL_get_error(ssl,sent)) {
+        case SSL_ERROR_NONE:
+            if(request_length != sent)
+                DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Incomplete write in conn_write_ssl"));
+            break;
+        default:
+            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** generic write problem in conn_write_ssl"));
+    }
+
+
+    if(sent == -1) {
+        if(errno == EAGAIN || errno == EINTR) {
+            /* write would block, try later */
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+
+    buffer_skip(tcp->packet, sent);
+    tcp->total_bytes += sent;
+
+    if(tcp->total_bytes < tcp->msglen + sizeof(tcp->msglen)) {
+        /* more to write when socket becomes writable again */
+        return 0;
+    }
+
+    assert(tcp->total_bytes == tcp->msglen + sizeof(tcp->msglen));
+    return 1;
+
 }
 
 int conn_write(struct xfrd_tcp* tcp)
@@ -712,7 +1087,8 @@ int conn_write(struct xfrd_tcp* tcp)
 void
 xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 {
-	int ret;
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** tcp write!"));
+    int ret;
 	struct xfrd_tcp* tcp = tp->tcp_w;
 	assert(zone->tcp_conn != -1);
 	assert(zone == tp->tcp_send_first);
@@ -735,8 +1111,12 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 			return;
 		}
 	}
-	ret = conn_write(tcp);
-	if(ret == -1) {
+//	ret = conn_write(tcp);
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** zone %s mapping to tcp conn of %s with port %d, attempting SSL write",
+            zone->apex_str, zone->master->ip_address_spec, zone->master->port));
+    ret = conn_write_ssl(tcp, tp->ssl);
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** conn_write_ssl returned %d", ret));
+    if(ret == -1) {
 		log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 		xfrd_tcp_pipe_stop(tp);
 		return;
@@ -757,8 +1137,12 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 		/* setup to write for this zone */
 		xfrd_tcp_setup_write_packet(tp, tp->tcp_send_first);
 		/* attempt to write for this zone (if success, continue loop)*/
-		ret = conn_write(tcp);
-		if(ret == -1) {
+//		ret = conn_write(tcp);
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** zone %s mapping to tcp conn of %s, attempting YET ANOTHER SSL write",
+                zone->apex_str, zone->master->ip_address_spec));
+		ret = conn_write_ssl(tcp, tp->ssl);
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** conn_write_ssl returned %d", ret));
+        if(ret == -1) {
 			log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 			xfrd_tcp_pipe_stop(tp);
 			return;
@@ -774,6 +1158,108 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 	assert(tp->tcp_send_first == NULL);
 	tcp_pipe_reset_timeout(tp);
 }
+
+int
+conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
+{
+    ssize_t received;
+    /* receive leading packet length bytes */
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+            "xfrd: *** in ssl_read total bytes %d and msglen %lu", tcp->total_bytes, sizeof(tcp->msglen)));
+    if(tcp->total_bytes < sizeof(tcp->msglen)) {
+        ERR_clear_error();
+
+        received = SSL_read(ssl,
+                        (char*) &tcp->msglen + tcp->total_bytes,
+                        sizeof(tcp->msglen) - tcp->total_bytes);
+        if (received <= 0) {
+            int err =SSL_get_error(ssl, received);
+            DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+                    "xfrd: *** xyzzy ssl_read returned error %d", err));
+
+            if(err == SSL_ERROR_ZERO_RETURN) {
+                /* EOF */
+                return 0;
+            }
+        }
+
+        if(received == -1) {
+            if(errno == EAGAIN || errno == EINTR) {
+                /* read would block, try later */
+                return 0;
+            } else {
+#ifdef ECONNRESET
+                if (verbosity >= 2 || errno != ECONNRESET)
+#endif /* ECONNRESET */
+                    log_msg(LOG_ERR, "tcp read %s", strerror(errno));
+                return -1;
+            }
+        } else if(received == 0) {
+            /* EOF */
+            return -1;
+        }
+
+
+
+        tcp->total_bytes += received;
+        if(tcp->total_bytes < sizeof(tcp->msglen)) {
+            /* not complete yet, try later */
+            return 0;
+        }
+
+        assert(tcp->total_bytes == sizeof(tcp->msglen));
+        tcp->msglen = ntohs(tcp->msglen);
+
+        if(tcp->msglen == 0) {
+            buffer_set_limit(tcp->packet, tcp->msglen);
+            return 1;
+        }
+        if(tcp->msglen > buffer_capacity(tcp->packet)) {
+            log_msg(LOG_ERR, "buffer too small, dropping connection");
+            return 0;
+        }
+        buffer_set_limit(tcp->packet, tcp->msglen);
+    }
+
+    assert(buffer_remaining(tcp->packet) > 0);
+    ERR_clear_error();
+
+    received = SSL_read(ssl, buffer_current(tcp->packet),
+                    buffer_remaining(tcp->packet));
+
+    int err =SSL_get_error(ssl, received);
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+            "xfrd: *** xyzzy ssl_read returned error %d", err));
+
+    if(received == -1) {
+        if(errno == EAGAIN || errno == EINTR) {
+            /* read would block, try later */
+            return 0;
+        } else {
+#ifdef ECONNRESET
+            if (verbosity >= 2 || errno != ECONNRESET)
+#endif /* ECONNRESET */
+                log_msg(LOG_ERR, "tcp read %s", strerror(errno));
+            return -1;
+        }
+    } else if(received == 0) {
+        /* EOF */
+        return -1;
+    }
+
+    tcp->total_bytes += received;
+    buffer_skip(tcp->packet, received);
+
+    if(buffer_remaining(tcp->packet) > 0) {
+        /* not complete yet, wait for more */
+        return 0;
+    }
+
+    /* completed */
+    assert(buffer_position(tcp->packet) == tcp->msglen);
+    return 1;
+}
+
 
 int
 conn_read(struct xfrd_tcp* tcp)
@@ -859,9 +1345,13 @@ xfrd_tcp_read(struct xfrd_tcp_pipeline* tp)
 	struct xfrd_tcp* tcp = tp->tcp_r;
 	int ret;
 	enum xfrd_packet_result pkt_result;
-
-	ret = conn_read(tcp);
+//	ret = conn_read(tcp);
+	ret = conn_read_ssl(tcp, tp->ssl);
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+            "xfrd: *** xyzzy ssl conn_read returned %d", ret));
 	if(ret == -1) {
+		DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+			"xfrd: *** xyzzy ssl conn_read returned -1, stopping pipe"));
 		xfrd_tcp_pipe_stop(tp);
 		return;
 	}

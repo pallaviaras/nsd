@@ -11,6 +11,8 @@
 #define XFRD_TCP_H
 
 #include "xfrd.h"
+#include <openssl/ssl.h>
+
 
 struct buffer;
 struct xfrd_zone;
@@ -35,6 +37,8 @@ struct xfrd_tcp_set {
 	int tcp_timeout;
 	/* rbtree with pipelines sorted by master */
 	rbtree_type* pipetree;
+	/* XoT: SSL context */
+    SSL_CTX* ssl_ctx;
 	/* double linked list of zones waiting for a TCP connection */
 	struct xfrd_zone *tcp_waiting_first, *tcp_waiting_last;
 };
@@ -105,6 +109,23 @@ struct xfrd_tcp_pipeline {
 	struct xfrd_tcp* tcp_w;
 	/* once a byte has been written, handshake complete */
 	int connection_established;
+
+	/* XoT: SSL */
+	/* XoT: ssl object */
+    SSL *ssl;
+    /** handshake state for init and renegotiate */
+    enum {
+        /** no handshake, it has been done */
+        ssl_shake_none = 0,
+        /** ssl initial handshake wants to read */
+        ssl_shake_read,
+        /** ssl initial handshake wants to write */
+        ssl_shake_write,
+        /** ssl_write wants to read */
+        ssl_shake_hs_read,
+        /** ssl_read wants to write */
+        ssl_shake_hs_write
+    } ssl_shake_state;
 
 	/* list of queries that want to send, first to get write event,
 	 * if NULL, no write event interest */
@@ -190,6 +211,6 @@ socklen_t xfrd_acl_sockaddr_frm(struct acl_options* acl,
 #endif /* INET6 */
 
 /* create pipeline tcp structure */
-struct xfrd_tcp_pipeline* xfrd_tcp_pipeline_create(region_type* region);
+struct xfrd_tcp_pipeline* xfrd_tcp_pipeline_create(region_type* region, struct xfrd_tcp_set* tcp_set);
 
 #endif /* XFRD_TCP_H */
