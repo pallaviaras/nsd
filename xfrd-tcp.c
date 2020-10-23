@@ -1492,10 +1492,12 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->handler_added = 0;
 
     /* close SSL */
-    int r = SSL_shutdown(tp->ssl);
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Shutting down SSL"));
+    int ret = SSL_shutdown(tp->ssl);
     //error handling here if r < 0
-    if(!r)
+    if(!ret)
     {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL shutdown ran into error, trying shutdown first.."));
         shutdown(tp->tcp_r->fd,1);
         SSL_shutdown(tp->ssl);
     }
@@ -1506,8 +1508,6 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		close(tp->tcp_r->fd);
 	tp->tcp_r->fd = -1;
 	tp->tcp_w->fd = -1;
-
-
 
 	/* remove from pipetree */
 	(void)rbtree_delete(xfrd->tcp_set->pipetree, &tp->node);
