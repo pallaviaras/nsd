@@ -27,6 +27,8 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+
+
 SSL_CTX*
 create_context()
 {
@@ -47,21 +49,21 @@ void configure_context(SSL_CTX *ctx)
 {
     // Only trust 1.3
 //    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
-
-    SSL_CTX_set_ecdh_auto(ctx, 1);
-    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
-
-    /* Set the key and cert */
-    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
-    }
-
-    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0 ) {
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
-    }
+//
+//    SSL_CTX_set_ecdh_auto(ctx, 1);
+//    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
+//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
+//
+//    /* Set the key and cert */
+//    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
+//        ERR_print_errors_fp(stderr);
+//        exit(EXIT_FAILURE);
+//    }
+//
+//    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0 ) {
+//        ERR_print_errors_fp(stderr);
+//        exit(EXIT_FAILURE);
+//    }
 }
 
 void* create_ssl_fd(void* ssl_ctx, int fd)
@@ -179,7 +181,8 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	tcp_set->tcp_waiting_last = 0;
 	// Set up SSL Context
 	tcp_set->ssl_ctx = create_context();
-	for(i=0; i<XFRD_MAX_TCP; i++)
+    configure_context(tcp_set->ssl_ctx);
+    for(i=0; i<XFRD_MAX_TCP; i++)
 		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region, tcp_set);
 	tcp_set->pipetree = rbtree_create(region, &xfrd_pipe_cmp);
 	return tcp_set;
@@ -197,15 +200,6 @@ xfrd_tcp_pipeline_create(region_type* region, struct xfrd_tcp_set* tcp_set)
 		tp->unused[i] = (uint16_t)i;
 	tp->tcp_r = xfrd_tcp_create(region, QIOBUFSZ);
 	tp->tcp_w = xfrd_tcp_create(region, 512);
-
-//    if(ssl) {
-    if(!setup_ssl(tp, tcp_set)) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Cannot setup SSL on pipeline"));
-//        xfrd_tcp_pipe_release(xfrd->tcp_set, tp, -1);
-    } else {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL setup successfully!"));
-    }
-//    }
 
 	return tp;
 }
@@ -274,7 +268,7 @@ xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_storage *to)
 xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_in *to)
 #endif /* INET6 */
 {
-	unsigned int port = acl->port?acl->port:(unsigned)atoi(TLS_PORT);
+	unsigned int port = acl->port?acl->port:(unsigned)atoi(TCP_PORT);
 #ifdef INET6
 	return xfrd_acl_sockaddr(acl, port, to);
 #else
@@ -838,23 +832,31 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 
     DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, trying to do SSL connect"));
 
+    if(!setup_ssl(tp, set)) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Cannot setup SSL on pipeline"));
+    } else {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL setup successfully!"));
+    }
+
     BIO *sbio = BIO_new_socket(fd,BIO_NOCLOSE);
     SSL_set_bio(tp->ssl,sbio,sbio);
     int ret, err;
     while(1) {
         ERR_clear_error();
-        if( (ret=SSL_do_handshake(tp->ssl)) == 1)
+        if( (ret=SSL_do_handshake(tp->ssl)) == 1) {
+            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL handshake worked!"));
             break;
-//        if
+        }
         err = SSL_get_error(tp->ssl, ret);
         if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL connect failed in tcp open with return value %d", err));
+            close(fd);
+            xfrd_set_refresh_now(zone);
             return 0;
         }
         /* else wants to be called again */
     }
 
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL handshake worked!"));
 
 
 	tp->tcp_r->fd = fd;
@@ -1224,12 +1226,22 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     assert(buffer_remaining(tcp->packet) > 0);
     ERR_clear_error();
 
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+            "xfrd: *** xyzzy doing ssl_read again!"));
+
     received = SSL_read(ssl, buffer_current(tcp->packet),
                     buffer_remaining(tcp->packet));
 
-    int err =SSL_get_error(ssl, received);
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-            "xfrd: *** xyzzy ssl_read returned error %d", err));
+    if (received <= 0) {
+        int err =SSL_get_error(ssl, received);
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+                "xfrd: *** xyzzy ssl_read returned error %d", err));
+
+        if(err == SSL_ERROR_ZERO_RETURN) {
+            /* EOF */
+            return 0;
+        }
+    }
 
     if(received == -1) {
         if(errno == EAGAIN || errno == EINTR) {
@@ -1479,11 +1491,23 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		event_del(&tp->handler);
 	tp->handler_added = 0;
 
+    /* close SSL */
+    int r = SSL_shutdown(tp->ssl);
+    //error handling here if r < 0
+    if(!r)
+    {
+        shutdown(tp->tcp_r->fd,1);
+        SSL_shutdown(tp->ssl);
+    }
+    SSL_free(tp->ssl);
+
 	/* fd in tcp_r and tcp_w is the same, close once */
 	if(tp->tcp_r->fd != -1)
 		close(tp->tcp_r->fd);
 	tp->tcp_r->fd = -1;
 	tp->tcp_w->fd = -1;
+
+
 
 	/* remove from pipetree */
 	(void)rbtree_delete(xfrd->tcp_set->pipetree, &tp->node);
@@ -1534,5 +1558,6 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	assert(!set->tcp_waiting_first);
 	set->tcp_count --;
 	assert(set->tcp_count >= 0);
+
 }
 
