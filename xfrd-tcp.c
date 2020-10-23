@@ -48,7 +48,7 @@ create_context()
 void configure_context(SSL_CTX *ctx)
 {
     // Only trust 1.3
-//    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
 //
 //    SSL_CTX_set_ecdh_auto(ctx, 1);
 //    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
