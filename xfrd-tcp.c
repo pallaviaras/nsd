@@ -27,28 +27,14 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-
-
-SSL_CTX*
-create_context()
-{
-    const SSL_METHOD *method;
-    SSL_CTX *ctx;
-
-    // if using openssl < 1.1.0
-//    method = SSLv23_server_method();
-
-    ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL ctxt"));
-    }
-    return ctx;
-}
-
 void configure_context(SSL_CTX *ctx)
 {
     // Only trust 1.3
-    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL CTX"));
+    if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION)) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL CTX"));
+        SSL_CTX_free(ctx);
+    }
 //
 //    SSL_CTX_set_ecdh_auto(ctx, 1);
 //    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
@@ -66,12 +52,32 @@ void configure_context(SSL_CTX *ctx)
 //    }
 }
 
+SSL_CTX*
+create_context()
+{
+    const SSL_METHOD *method;
+    SSL_CTX *ctx;
+
+    // if using openssl < 1.1.0
+//    method = SSLv23_server_method();
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Creating SSL context"));
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL ctxt"));
+    }
+    else {
+        configure_context(ctx);
+    }
+    return ctx;
+}
+
+
 void* create_ssl_fd(void* ssl_ctx, int fd)
 {
 //#ifdef HAVE_SSL
     SSL* ssl = SSL_new((SSL_CTX*)ssl_ctx);
     if(!ssl) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL ctxt"));
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL object"));
         return NULL;
     }
     SSL_set_connect_state(ssl);
@@ -97,6 +103,7 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
     tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
     if(!tp->ssl) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** cannot create SSL object"));
+        SSL_free(tp->ssl);
         return 0;
     }
     tp->ssl_shake_state = ssl_shake_write;
@@ -105,6 +112,17 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
     SSL_set_verify(tp->ssl, SSL_VERIFY_NONE, NULL);
     if(!SSL_set1_host(tp->ssl, NULL)) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL_set1_host failed"));
+        SSL_free(tp->ssl);
+        tp->ssl = NULL;
+        return 0;
+    }
+
+    // Only trust 1.3
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
+    if (!SSL_set_min_proto_version(tp->ssl, TLS1_3_VERSION)) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL object"));
+        SSL_free(tp->ssl);
+        tp->ssl = NULL;
         return 0;
     }
 
@@ -181,7 +199,6 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	tcp_set->tcp_waiting_last = 0;
 	// Set up SSL Context
 	tcp_set->ssl_ctx = create_context();
-    configure_context(tcp_set->ssl_ctx);
     for(i=0; i<XFRD_MAX_TCP; i++)
 		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region, tcp_set);
 	tcp_set->pipetree = rbtree_create(region, &xfrd_pipe_cmp);
@@ -850,6 +867,9 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
         err = SSL_get_error(tp->ssl, ret);
         if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL connect failed in tcp open with return value %d", err));
+            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Min proto version for ctx is %lx and object is %lx",
+                    SSL_CTX_get_min_proto_version(xfrd->tcp_set->ssl_ctx),
+                    SSL_get_min_proto_version(tp->ssl)));
             close(fd);
             xfrd_set_refresh_now(zone);
             return 0;
@@ -1497,11 +1517,13 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
     //error handling here if r < 0
     if(!ret)
     {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL shutdown ran into error, trying shutdown first.."));
-        shutdown(tp->tcp_r->fd,1);
-        SSL_shutdown(tp->ssl);
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL shutdown ran into error with return value %d", ret));
+        if (!SSL_shutdown(tp->ssl)) {
+            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL shutdown ran into error AGAIN, giving up.."));
+        }
     }
     SSL_free(tp->ssl);
+    tp->ssl = NULL;
 
 	/* fd in tcp_r and tcp_w is the same, close once */
 	if(tp->tcp_r->fd != -1)
