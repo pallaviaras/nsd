@@ -847,6 +847,9 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		return 0;
 	}
 
+	tp->tcp_r->fd = fd;
+	tp->tcp_w->fd = fd;
+
     DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, trying to do SSL connect"));
 
     if(!setup_ssl(tp, set)) {
@@ -855,8 +858,6 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL setup successfully!"));
     }
 
-    BIO *sbio = BIO_new_socket(fd,BIO_NOCLOSE);
-    SSL_set_bio(tp->ssl,sbio,sbio);
     int ret, err;
     while(1) {
         ERR_clear_error();
@@ -876,11 +877,6 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
         }
         /* else wants to be called again */
     }
-
-
-
-	tp->tcp_r->fd = fd;
-	tp->tcp_w->fd = fd;
 
 	/* set the tcp pipe event */
 	if(tp->handler_added)
@@ -1514,20 +1510,12 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
     /* close SSL */
     DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Shutting down SSL"));
     int ret = SSL_shutdown(tp->ssl);
-    //error handling here if r < 0
-    if(!ret)
-    {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL shutdown ran into error with return value %d", ret));
-        if (!SSL_shutdown(tp->ssl)) {
-            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL shutdown ran into error AGAIN, giving up.."));
-        }
-    }
     SSL_free(tp->ssl);
     tp->ssl = NULL;
 
 	/* fd in tcp_r and tcp_w is the same, close once */
 	if(tp->tcp_r->fd != -1)
-		close(tp->tcp_r->fd);
+		shutdown(tp->tcp_r->fd, SHUT_RDWR);
 	tp->tcp_r->fd = -1;
 	tp->tcp_w->fd = -1;
 
