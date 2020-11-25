@@ -27,14 +27,23 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+static int
+set_min_version_ssl_ctxt(SSL_CTX *ssl_ctx, int version)
+{
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL CTX"));
+    if (!SSL_CTX_set_min_proto_version(ssl_ctx, version)) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL CTX"));
+        SSL_CTX_free(ssl_ctx);
+        ssl_ctx = NULL;
+        return 0;
+    }
+    return 1;
+}
 void configure_context(SSL_CTX *ctx)
 {
     // Only trust 1.3
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL CTX"));
-    if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION)) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL CTX"));
-        SSL_CTX_free(ctx);
-    }
+//    set_min_version_ssl_ctxt(ctx, TLS1_3_VERSION);
+
 //
 //    SSL_CTX_set_ecdh_auto(ctx, 1);
 //    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
@@ -58,8 +67,6 @@ create_context()
     const SSL_METHOD *method;
     SSL_CTX *ctx;
 
-    // if using openssl < 1.1.0
-//    method = SSLv23_server_method();
     DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Creating SSL context"));
     ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
@@ -67,6 +74,7 @@ create_context()
     }
     else {
         configure_context(ctx);
+        //TODO error handling if configure failure? check
     }
     return ctx;
 }
@@ -74,7 +82,6 @@ create_context()
 
 void* create_ssl_fd(void* ssl_ctx, int fd)
 {
-//#ifdef HAVE_SSL
     SSL* ssl = SSL_new((SSL_CTX*)ssl_ctx);
     if(!ssl) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL object"));
@@ -88,18 +95,110 @@ void* create_ssl_fd(void* ssl_ctx, int fd)
         return NULL;
     }
     return ssl;
-//#else
-//    (void)sslctx; (void)fd;
-//	return NULL;
-//#endif
 }
 
-/** setup SSL for comm point */
+static int
+set_min_version_ssl(SSL *ssl, int version)
+{
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
+    if (!SSL_set_min_proto_version(ssl, version)) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL object"));
+        SSL_free(ssl);
+        ssl = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+/* This prints the Common Name (CN), which is the "friendly" */
+/*   name displayed to users in many tools                   */
+void print_cn_name(const char* label, X509_NAME* const name)
+{
+    int idx = -1, success = 0;
+    unsigned char *utf8 = NULL;
+
+    do
+    {
+        if(!name) break; /* failed */
+
+        idx = X509_NAME_get_index_by_NID(name, NID_commonName, -1);
+        if(!(idx > -1))  break; /* failed */
+
+        X509_NAME_ENTRY* entry = X509_NAME_get_entry(name, idx);
+        if(!entry) break; /* failed */
+
+        ASN1_STRING* data = X509_NAME_ENTRY_get_data(entry);
+        if(!data) break; /* failed */
+
+        int length = ASN1_STRING_to_UTF8(&utf8, data);
+        if(!utf8 || !(length > 0))  break; /* failed */
+
+        fprintf(stdout, "%s: %s\n", label, utf8);
+        success = 1;
+
+    } while (0);
+
+    if(utf8)
+        OPENSSL_free(utf8);
+
+    if(!success)
+        fprintf(stdout, "  %s: <not available>\n", label);
+}
+
+int
+tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
+{
+
+    int err = X509_STORE_CTX_get_error(ctx);
+    int depth = X509_STORE_CTX_get_error_depth(ctx);
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "WARNING: in TLS verify callback with depth %d", depth));
+
+    if (!preverify_ok) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "Verify failed : Transport=TLS - *Failure* -  (%d) with depth %d \"%s\"\n",
+                err,
+                depth,
+                X509_verify_cert_error_string(err)));
+    }
+
+    /* First deal with the hostname authentication done by OpenSSL. */
+//#ifdef X509_V_ERR_HOSTNAME_MISMATCH
+    if (err == X509_V_ERR_HOSTNAME_MISMATCH)
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "WARNING: Proceeding even though hostname validation failed!"));
+
+//# endif
+//#else
+    /* if we weren't built against OpenSSL with hostname matching we
+	 * could not have matched the hostname, so this would be an automatic
+	 * tls_auth_fail if there is a hostname provided*/
+//    if (upstream->tls_auth_name[0]) {
+//        upstream->tls_auth_state = GETDNS_AUTH_FAILED;
+//        preverify_ok = 0;
+//    }
+//#endif
+    X509* cert = X509_STORE_CTX_get_current_cert(ctx);
+    X509_NAME* iname = cert ? X509_get_issuer_name(cert) : NULL;
+    X509_NAME* sname = cert ? X509_get_subject_name(cert) : NULL;
+
+    print_cn_name("Issuer (cn)", iname);
+    print_cn_name("Subject (cn)", sname);
+
+    /* If nothing has failed yet and we had credentials, we have successfully authenticated*/
+    return preverify_ok;
+}
+
+
+
+/**
+ * Setup SSL
+ * - Create SSL object
+ * - Connect the object with file descriptor TCP reading/writing
+ * - Set auth
+ * - Set version
+ */
 static int
 setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
 {
 
-    // should this be tcp_r fd or both?
     tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
     if(!tp->ssl) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** cannot create SSL object"));
@@ -108,9 +207,11 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
     }
     tp->ssl_shake_state = ssl_shake_write;
 
-//#ifdef HAVE_SSL_SET1_HOST
-    SSL_set_verify(tp->ssl, SSL_VERIFY_NONE, NULL);
-    if(!SSL_set1_host(tp->ssl, NULL)) {
+    SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, NULL);
+//    SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, tls_verify_callback);
+    // TODO do we need the SNI?
+    SSL_set_tlsext_host_name(tp->ssl, "shivankaul.com");
+    if(!SSL_set1_host(tp->ssl, "shivankaul.com")) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL_set1_host failed"));
         SSL_free(tp->ssl);
         tp->ssl = NULL;
@@ -118,47 +219,10 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
     }
 
     // Only trust 1.3
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
-    if (!SSL_set_min_proto_version(tp->ssl, TLS1_3_VERSION)) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL object"));
-        SSL_free(tp->ssl);
-        tp->ssl = NULL;
-        return 0;
-    }
+//    if (!set_min_version_ssl(tp->ssl, TLS1_3_VERSION)) {
+//        return 0;
+//    }
 
-//
-//    if () {
-//		/* because we set SSL_VERIFY_PEER, in netevent in
-//		 * ssl_handshake, it'll check if the certificate
-//		 * verification has succeeded */
-//		/* SSL_VERIFY_PEER is set on the sslctx */
-//		/* and the certificates to verify with are loaded into
-//		 * it with SSL_load_verify_locations or
-//		 * SSL_CTX_set_default_verify_paths */
-//		/* setting the hostname makes openssl verify the
-//		 * host name in the x509 certificate in the
-//		 * SSL connection*/
-//		if(!SSL_set1_host(cp->ssl, host)) {
-//			log_err("SSL_set1_host failed");
-//			return 0;
-//		}
-//	}
-//#elif defined(HAVE_X509_VERIFY_PARAM_SET1_HOST)
-//    /* openssl 1.0.2 has this function that can be used for
-//	 * set1_host like verification */
-//	if((SSL_CTX_get_verify_mode(outnet->sslctx)&SSL_VERIFY_PEER)) {
-//		X509_VERIFY_PARAM* param = SSL_get0_param(cp->ssl);
-//#  ifdef X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS
-//		X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-//#  endif
-//		if(!X509_VERIFY_PARAM_set1_host(param, host, strlen(host))) {
-//			log_err("X509_VERIFY_PARAM_set1_host failed");
-//			return 0;
-//		}
-//	}
-//#else
-//    (void)host;
-//#endif /* HAVE_SSL_SET1_HOST */
     return 1;
 }
 
@@ -878,7 +942,18 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
         /* else wants to be called again */
     }
 
-	/* set the tcp pipe event */
+    /* Validate the server */
+    X509* cert = SSL_get_peer_certificate(tp->ssl);
+    if (!cert) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** failed to get cert from server"));
+    }
+    long res = SSL_get_verify_result(tp->ssl);
+    if(!(X509_V_OK == res)) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL verify got result %ld", res));
+    }
+
+
+    /* set the tcp pipe event */
 	if(tp->handler_added)
 		event_del(&tp->handler);
 	memset(&tp->handler, 0, sizeof(tp->handler));
