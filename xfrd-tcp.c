@@ -41,32 +41,18 @@ set_min_version_ssl_ctxt(SSL_CTX *ssl_ctx, int version)
 }
 void configure_context(SSL_CTX *ctx)
 {
-    // Only trust 1.3
-//    set_min_version_ssl_ctxt(ctx, TLS1_3_VERSION);
-
-//
-//    SSL_CTX_set_ecdh_auto(ctx, 1);
-//    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
-//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
-//
-//    /* Set the key and cert */
-//    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
-//        ERR_print_errors_fp(stderr);
-//        exit(EXIT_FAILURE);
-//    }
-//
-//    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0 ) {
-//        ERR_print_errors_fp(stderr);
-//        exit(EXIT_FAILURE);
-//    }
+    // Only trust 1.3, according to the XoT specification
+    set_min_version_ssl_ctxt(ctx, TLS1_3_VERSION);
+    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
+    //TODO error out?
+    //TODO default user-provided context?
 }
 
 SSL_CTX*
 create_context()
 {
-    const SSL_METHOD *method;
     SSL_CTX *ctx;
-
     DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Creating SSL context"));
     ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
@@ -110,8 +96,9 @@ set_min_version_ssl(SSL *ssl, int version)
     return 1;
 }
 
-/* This prints the Common Name (CN), which is the "friendly" */
-/*   name displayed to users in many tools                   */
+/*
+ * This prints the Common Name (CN), which is the "friendly" name displayed to users in many tools
+ */
 void print_cn_name(const char* label, X509_NAME* const name)
 {
     int idx = -1, success = 0;
@@ -145,6 +132,9 @@ void print_cn_name(const char* label, X509_NAME* const name)
         fprintf(stdout, "  %s: <not available>\n", label);
 }
 
+/*
+ * TODO: do we even need this until we SPKI pin validation?
+ */
 int
 tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
@@ -198,7 +188,6 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 static int
 setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
 {
-
     tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
     if(!tp->ssl) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** cannot create SSL object"));
@@ -207,10 +196,8 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
     }
     tp->ssl_shake_state = ssl_shake_write;
 
-    SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, NULL);
-//    SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, tls_verify_callback);
-    // TODO do we need the SNI?
-    SSL_set_tlsext_host_name(tp->ssl, "shivankaul.com");
+    SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, tls_verify_callback);
+    //TODO get parameter for hostname
     if(!SSL_set1_host(tp->ssl, "shivankaul.com")) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL_set1_host failed"));
         SSL_free(tp->ssl);
@@ -219,9 +206,9 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
     }
 
     // Only trust 1.3
-//    if (!set_min_version_ssl(tp->ssl, TLS1_3_VERSION)) {
-//        return 0;
-//    }
+    if (!set_min_version_ssl(tp->ssl, TLS1_3_VERSION)) {
+        return 0;
+    }
 
     return 1;
 }
@@ -693,134 +680,6 @@ xfrd_tcp_obtain(struct xfrd_tcp_set* set, xfrd_zone_type* zone)
 	xfrd_deactivate_zone(zone);
 	xfrd_unset_timer(zone);
 }
-
-//int
-//xfrd_tcp_open_ssl(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
-//              xfrd_zone_type* zone)
-//{
-//    int fd, family, conn;
-//    struct timeval tv;
-//    assert(zone->tcp_conn != -1);
-//
-//    /* if there is no next master, fallback to use the first one */
-//    /* but there really should be a master set */
-//    if(!zone->master) {
-//        zone->master = zone->zone_options->pattern->request_xfr;
-//        zone->master_num = 0;
-//    }
-//
-//    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: SSL zone %s open tcp conn to %s",
-//            zone->apex_str, zone->master->ip_address_spec));
-//    tp->tcp_r->is_reading = 1;
-//    tp->tcp_r->total_bytes = 0;
-//    tp->tcp_r->msglen = 0;
-//    buffer_clear(tp->tcp_r->packet);
-//    tp->tcp_w->is_reading = 0;
-//    tp->tcp_w->total_bytes = 0;
-//    tp->tcp_w->msglen = 0;
-//    tp->connection_established = 0;
-//
-//    if(zone->master->is_ipv6) {
-//#ifdef INET6
-//        family = PF_INET6;
-//#else
-//        xfrd_set_refresh_now(zone);
-//		return 0;
-//#endif
-//    } else {
-//        family = PF_INET;
-//    }
-//    fd = socket(family, SOCK_STREAM, IPPROTO_TCP);
-//
-//    BIO *web, *out = NULL;
-//    long res = 1;
-//    if (!(web = BIO_new_ssl_connect(set->ssl_ctx)))
-//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO new ssl connect failed"));
-//    BIO_set_conn_hostname(web, "69.172.188.13:853"); // hardcoded
-//
-//    BIO_get_ssl(web, &tp->ssl);
-//    if(!(tp->ssl != NULL))
-//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO BIO_get_ssl failed"));
-//
-//    out = BIO_new_fp(stdout, BIO_NOCLOSE);
-//    if(!(NULL != out))
-//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO BIO_new_fp failed"));
-//
-//    res = BIO_do_connect(web);
-//    if(!(1 == res))
-//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO do connect failed"));
-//
-//    res = BIO_do_handshake(web);
-//    if(!(1 == res))
-//        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "*** BIO do handshake failed"));
-//
-//
-//
-//    if(fd == -1) {
-//        /* squelch 'Address family not supported by protocol' at low
-//         * verbosity levels */
-//        if(errno != EAFNOSUPPORT || verbosity > 2)
-//            log_msg(LOG_ERR, "xfrd: %s cannot create tcp socket: %s",
-//                    zone->master->ip_address_spec, strerror(errno));
-//        xfrd_set_refresh_now(zone);
-//        return 0;
-//    }
-//    if(fcntl(fd, F_SETFL, O_NONBLOCK) == -1) {
-//        log_msg(LOG_ERR, "xfrd: fcntl failed: %s", strerror(errno));
-//        close(fd);
-//        xfrd_set_refresh_now(zone);
-//        return 0;
-//    }
-//
-//    if(xfrd->nsd->outgoing_tcp_mss > 0) {
-//#if defined(IPPROTO_TCP) && defined(TCP_MAXSEG)
-//        if(setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG,
-//                      (void*)&xfrd->nsd->outgoing_tcp_mss,
-//                      sizeof(xfrd->nsd->outgoing_tcp_mss)) < 0) {
-//            log_msg(LOG_ERR, "xfrd: setsockopt(TCP_MAXSEG)"
-//                             "failed: %s", strerror(errno));
-//        }
-//#else
-//        log_msg(LOG_ERR, "setsockopt(TCP_MAXSEG) unsupported");
-//#endif
-//    }
-//
-//    tp->ip_len = xfrd_acl_sockaddr_to(zone->master, &tp->ip);
-//
-//    /* bind it */
-//    if (!xfrd_bind_local_interface(fd, zone->zone_options->pattern->
-//            outgoing_interface, zone->master, 1)) {
-//        close(fd);
-//        xfrd_set_refresh_now(zone);
-//        return 0;
-//    }
-//
-//    conn = connect(fd, (struct sockaddr*)&tp->ip, tp->ip_len);
-//    if (conn == -1 && errno != EINPROGRESS) {
-//        log_msg(LOG_ERR, "xfrd: connect %s failed: %s",
-//                zone->master->ip_address_spec, strerror(errno));
-//        close(fd);
-//        xfrd_set_refresh_now(zone);
-//        return 0;
-//    }
-//    tp->tcp_r->fd = fd;
-//    tp->tcp_w->fd = fd;
-//
-//    /* set the tcp pipe event */
-//    if(tp->handler_added)
-//        event_del(&tp->handler);
-//    memset(&tp->handler, 0, sizeof(tp->handler));
-//    event_set(&tp->handler, fd, EV_PERSIST|EV_TIMEOUT|EV_READ|EV_WRITE,
-//              xfrd_handle_tcp_pipe, tp);
-//    if(event_base_set(xfrd->event_base, &tp->handler) != 0)
-//        log_msg(LOG_ERR, "xfrd tcp: event_base_set failed");
-//    tv.tv_sec = set->tcp_timeout;
-//    tv.tv_usec = 0;
-//    if(event_add(&tp->handler, &tv) != 0)
-//        log_msg(LOG_ERR, "xfrd tcp: event_add failed");
-//    tp->handler_added = 1;
-//    return 1;
-//}
 
 
 int
