@@ -49,6 +49,7 @@ nsd_options_create(region_type* region)
 	opt->zonestatnames = rbtree_create(opt->region, rbtree_strcmp);
 	opt->patterns = rbtree_create(region, rbtree_strcmp);
 	opt->keys = rbtree_create(region, rbtree_strcmp);
+	opt->auths = rbtree_create(region, rbtree_strcmp);
 	opt->ip_addresses = NULL;
 	opt->ip_transparent = 0;
 	opt->ip_freebind = 0;
@@ -183,6 +184,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 	cfg_parser->pattern = NULL;
 	cfg_parser->zone = NULL;
 	cfg_parser->key = NULL;
+	cfg_parser->auth = NULL;
 
 	in = fopen(cfg_parser->filename, "r");
 	if(!in) {
@@ -226,6 +228,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		for(acl=pat->request_xfr; acl; acl=acl->next)
 		{
+            acl->auth_options = auth_options_find(opt, acl->auth_name);
 			if(acl->nokey || acl->blocked)
 				continue;
 			acl->key_options = key_options_find(opt, acl->key_name);
@@ -244,7 +247,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 	}
 
-	if(cfg_parser->errors > 0)
+    if(cfg_parser->errors > 0)
 	{
 		if(err) {
 			char m[MAXSYSLOGMSGLEN];
@@ -259,7 +262,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		return 0;
 	}
-	return 1;
+    return 1;
 }
 
 void options_zonestatnames_create(struct nsd_options* opt)
@@ -1264,6 +1267,15 @@ key_options_create(region_type* region)
 	return key;
 }
 
+struct auth_options*
+auth_options_create(region_type* region)
+{
+	struct auth_options* auth_options;
+    auth_options = (struct auth_options*)region_alloc_zero(region,
+		sizeof(struct auth_options));
+	return auth_options;
+}
+
 void
 key_options_insert(struct nsd_options* opt, struct key_options* key)
 {
@@ -1276,6 +1288,20 @@ struct key_options*
 key_options_find(struct nsd_options* opt, const char* name)
 {
 	return (struct key_options*)rbtree_search(opt->keys, name);
+}
+
+void
+auth_options_insert(struct nsd_options* opt, struct auth_options* auth)
+{
+	if(!auth->name) return;
+	auth->node.key = auth->name;
+	(void)rbtree_insert(opt->auths, &auth->node);
+}
+
+struct auth_options*
+auth_options_find(struct nsd_options* opt, const char* name)
+{
+	return (struct auth_options*)rbtree_search(opt->auths, name);
 }
 
 /** remove tsig_key contents */

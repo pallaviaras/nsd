@@ -29,6 +29,7 @@ typedef struct cpu_option cpu_option_type;
 typedef struct cpu_map_option cpu_map_option_type;
 typedef struct acl_options acl_options_type;
 typedef struct key_options key_options_type;
+typedef struct auth_options auth_options_type;
 typedef struct config_parser_state config_parser_state_type;
 
 /*
@@ -59,6 +60,9 @@ struct nsd_options {
 
 	/* rbtree of keys defined, by name */
 	rbtree_type* keys;
+
+	/* rbtree of auth defined, by name */
+	rbtree_type* auths;
 
 	/* list of ip addresses to bind to (or NULL for all) */
 	struct ip_address_option* ip_addresses;
@@ -303,6 +307,10 @@ struct acl_options {
 	uint8_t blocked;
 	const char* key_name;
 	struct key_options* key_options;
+
+	/* auth for XoT */
+	const char* auth_name;
+    struct auth_options* auth_options;
 } ATTR_PACKED;
 
 /*
@@ -315,6 +323,15 @@ struct key_options {
 	char* secret;
 	struct tsig_key* tsig_key;
 } ATTR_PACKED;
+
+/*
+ * Auth definition
+ */
+struct auth_options {
+    rbnode_type node; /* key of tree is name */
+    char* name;
+    char* auth_domain_name;
+};
 
 /** zone list free space */
 struct zonelist_free {
@@ -348,6 +365,7 @@ struct config_parser_state {
 	struct pattern_options *pattern;
 	struct zone_options *zone;
 	struct key_options *key;
+	struct auth_options *auth;
 	struct ip_address_option *ip;
 	void (*err)(void*,const char*);
 	void* err_arg;
@@ -385,8 +403,11 @@ void pattern_options_marshal(struct buffer* buffer, struct pattern_options* p);
 struct pattern_options* pattern_options_unmarshal(region_type* r,
 	struct buffer* b);
 struct key_options* key_options_create(region_type* region);
+struct auth_options* auth_options_create(region_type* region);
 void key_options_insert(struct nsd_options* opt, struct key_options* key);
+void auth_options_insert(struct nsd_options* opt, struct auth_options* key);
 struct key_options* key_options_find(struct nsd_options* opt, const char* name);
+struct auth_options* auth_options_find(struct nsd_options* opt, const char* name);
 void key_options_remove(struct nsd_options* opt, const char* name);
 int key_options_equal(struct key_options* p, struct key_options* q);
 void key_options_add_modify(struct nsd_options* opt, struct key_options* key);

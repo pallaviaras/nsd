@@ -113,19 +113,19 @@ struct xfrd_tcp_pipeline {
 	/* XoT: SSL */
 	/* XoT: ssl object */
     SSL *ssl;
-    /** handshake state for init and renegotiate */
-    enum {
-        /** no handshake, it has been done */
-        ssl_shake_none = 0,
-        /** ssl initial handshake wants to read */
-        ssl_shake_read,
-        /** ssl initial handshake wants to write */
-        ssl_shake_write,
-        /** ssl_write wants to read */
-        ssl_shake_hs_read,
-        /** ssl_read wants to write */
-        ssl_shake_hs_write
-    } ssl_shake_state;
+//    /** handshake state for init and renegotiate */
+//    enum {
+//        /** no handshake, it has been done */
+//        ssl_shake_none = 0,
+//        /** ssl initial handshake wants to read */
+//        ssl_shake_read,
+//        /** ssl initial handshake wants to write */
+//        ssl_shake_write,
+//        /** ssl_write wants to read */
+//        ssl_shake_hs_read,
+//        /** ssl_read wants to write */
+//        ssl_shake_hs_write
+//    } ssl_shake_state;
 
 	/* list of queries that want to send, first to get write event,
 	 * if NULL, no write event interest */

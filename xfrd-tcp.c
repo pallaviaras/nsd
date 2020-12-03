@@ -186,19 +186,20 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
  * - Set version
  */
 static int
-setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set)
+setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char* auth_domain_name)
 {
+    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** auth domain name %s", auth_domain_name));
     tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
     if(!tp->ssl) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** cannot create SSL object"));
         SSL_free(tp->ssl);
         return 0;
     }
-    tp->ssl_shake_state = ssl_shake_write;
+//    tp->ssl_shake_state = ssl_shake_write;
 
     SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, tls_verify_callback);
     //TODO get parameter for hostname
-    if(!SSL_set1_host(tp->ssl, "shivankaul.com")) {
+    if(!SSL_set1_host(tp->ssl, auth_domain_name)) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL_set1_host failed"));
         SSL_free(tp->ssl);
         tp->ssl = NULL;
@@ -773,9 +774,11 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->tcp_r->fd = fd;
 	tp->tcp_w->fd = fd;
 
+
+
     DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, trying to do SSL connect"));
 
-    if(!setup_ssl(tp, set)) {
+    if(!setup_ssl(tp, set, zone->master->auth_options->auth_domain_name)) {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Cannot setup SSL on pipeline"));
     } else {
         DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL setup successfully!"));
@@ -881,7 +884,6 @@ tcp_conn_ready_for_reading(struct xfrd_tcp* tcp)
 int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
     ssize_t sent;
-    int res;
 
     DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in conn_write_ssl"));
 
@@ -1443,7 +1445,7 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 
     /* close SSL */
     DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Shutting down SSL"));
-    int ret = SSL_shutdown(tp->ssl);
+    SSL_shutdown(tp->ssl);
     SSL_free(tp->ssl);
     tp->ssl = NULL;
 
