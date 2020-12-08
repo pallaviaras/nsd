@@ -228,7 +228,12 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		for(acl=pat->request_xfr; acl; acl=acl->next)
 		{
+		    /* Find auth*/
             acl->auth_options = auth_options_find(opt, acl->auth_name);
+            if(acl->auth_name && !acl->auth_options)
+                c_error("auth %s in pattern %s could not be found",
+                        acl->auth_name, pat->pname);
+            /* Find key */
 			if(acl->nokey || acl->blocked)
 				continue;
 			acl->key_options = key_options_find(opt, acl->key_name);
