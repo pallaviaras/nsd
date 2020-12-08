@@ -305,6 +305,15 @@ remote-control:
 	# e.g. from dd if=/dev/random of=/dev/stdout count=1 bs=32 | base64
 	#secret: "K2tf3TRjvQkVCmJF3/Z9vA=="
 
+# The auth clause establishes authentication attributes to use when authenticating
+# the far end of an outgoing TLS connection in access control lists, following RFC7858
+# and RFC8310. It has the following attributes:
+#
+# auth:
+	# The auth name. Used to refer to this auth information in the access control list.
+	#name: "authname"
+    # The authentication domain name as defined in RFC8310.
+	#auth-domain-name: "example.com"
 
 # Patterns have zone configuration and they are shared by one or more zones.
 #
