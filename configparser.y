@@ -651,7 +651,7 @@ auth_option:
       dname = (dname_type *)dname_parse(cfg_parser->opt->region, $2);
       cfg_parser->auth->name = region_strdup(cfg_parser->opt->region, $2);
       if(dname == NULL) {
-        yyerror("bad auth key name %s", $2);
+        yyerror("bad auth name %s", $2);
       } else {
         region_recycle(cfg_parser->opt->region, dname, dname_total_size(dname));
       }

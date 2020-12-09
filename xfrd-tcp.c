@@ -27,109 +27,60 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-static int
-set_min_version_ssl_ctxt(SSL_CTX *ssl_ctx, int version)
-{
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL CTX"));
-    if (!SSL_CTX_set_min_proto_version(ssl_ctx, version)) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL CTX"));
-        SSL_CTX_free(ssl_ctx);
-        ssl_ctx = NULL;
-        return 0;
-    }
-    return 1;
-}
+
 void configure_context(SSL_CTX *ctx)
 {
-    // Only trust 1.3, according to the XoT specification
-    set_min_version_ssl_ctxt(ctx, TLS1_3_VERSION);
-    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
-    //TODO error out?
-    //TODO default user-provided context?
+	if (SSL_CTX_set_default_verify_paths(ctx) != 1)
+		DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
+	//TODO error out?
+	//TODO default user-provided context?
 }
 
 SSL_CTX*
-create_context()
+create_ssl_context()
 {
-    SSL_CTX *ctx;
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Creating SSL context"));
-    ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL ctxt"));
-    }
-    else {
-        configure_context(ctx);
-        //TODO error handling if configure failure? check
-    }
-    return ctx;
+	SSL_CTX *ctx;
+	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Creating SSL context"));
+	ctx = SSL_CTX_new(TLS_client_method());
+	if (!ctx) {
+		log_msg(LOG_ERR, "xfrd tcp: Unable to create SSL ctxt");
+	}
+	else {
+		configure_context(ctx);
+		//TODO error handling if configure failure? check
+	}
+	return ctx;
 }
 
-
-void* create_ssl_fd(void* ssl_ctx, int fd)
+void*
+create_ssl_fd(void* ssl_ctx, int fd)
 {
-    SSL* ssl = SSL_new((SSL_CTX*)ssl_ctx);
-    if(!ssl) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to create SSL object"));
-        return NULL;
-    }
-    SSL_set_connect_state(ssl);
-    (void)SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
-    if(!SSL_set_fd(ssl, fd)) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Unable to set SSL_set_fd"));
-        SSL_free(ssl);
-        return NULL;
-    }
-    return ssl;
+	SSL* ssl = SSL_new((SSL_CTX*)ssl_ctx);
+	if(!ssl) {
+		log_msg(LOG_ERR, "xfrd tcp: Unable to create SSL object");
+		return NULL;
+	}
+	SSL_set_connect_state(ssl);
+	(void)SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
+	if(!SSL_set_fd(ssl, fd)) {
+		log_msg(LOG_ERR, "xfrd tcp: Unable to set SSL fd");
+		SSL_free(ssl);
+		return NULL;
+	}
+	return ssl;
 }
 
 static int
 set_min_version_ssl(SSL *ssl, int version)
 {
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
-    if (!SSL_set_min_proto_version(ssl, version)) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error setting minimum TLS version 1.3 for SSL object"));
-        SSL_free(ssl);
-        ssl = NULL;
-        return 0;
-    }
-    return 1;
-}
-
-/*
- * This prints the Common Name (CN), which is the "friendly" name displayed to users in many tools
- */
-void print_cn_name(const char* label, X509_NAME* const name)
-{
-    int idx = -1, success = 0;
-    unsigned char *utf8 = NULL;
-
-    do
-    {
-        if(!name) break; /* failed */
-
-        idx = X509_NAME_get_index_by_NID(name, NID_commonName, -1);
-        if(!(idx > -1))  break; /* failed */
-
-        X509_NAME_ENTRY* entry = X509_NAME_get_entry(name, idx);
-        if(!entry) break; /* failed */
-
-        ASN1_STRING* data = X509_NAME_ENTRY_get_data(entry);
-        if(!data) break; /* failed */
-
-        int length = ASN1_STRING_to_UTF8(&utf8, data);
-        if(!utf8 || !(length > 0))  break; /* failed */
-
-        fprintf(stdout, "%s: %s\n", label, utf8);
-        success = 1;
-
-    } while (0);
-
-    if(utf8)
-        OPENSSL_free(utf8);
-
-    if(!success)
-        fprintf(stdout, "  %s: <not available>\n", label);
+	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
+	if (!SSL_set_min_proto_version(ssl, version)) {
+		log_msg(LOG_ERR, "xfrd tcp: Unable to set minimum TLS version 1.3");
+		SSL_free(ssl);
+		ssl = NULL;
+		return 0;
+	}
+	return 1;
 }
 
 /*
@@ -139,43 +90,17 @@ int
 tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
 
-    int err = X509_STORE_CTX_get_error(ctx);
-    int depth = X509_STORE_CTX_get_error_depth(ctx);
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "WARNING: in TLS verify callback with depth %d", depth));
+	int err = X509_STORE_CTX_get_error(ctx);
+	int depth = X509_STORE_CTX_get_error_depth(ctx);
 
-    if (!preverify_ok) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "Verify failed : Transport=TLS - *Failure* -  (%d) with depth %d \"%s\"\n",
-                err,
-                depth,
-                X509_verify_cert_error_string(err)));
-    }
+	if (!preverify_ok)
+		log_msg(LOG_ERR, "xfrd tcp: TLS verify failed - (%d) with depth %d and error %s",
+				err,
+				depth,
+				X509_verify_cert_error_string(err));
 
-    /* First deal with the hostname authentication done by OpenSSL. */
-//#ifdef X509_V_ERR_HOSTNAME_MISMATCH
-    if (err == X509_V_ERR_HOSTNAME_MISMATCH)
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "WARNING: Proceeding even though hostname validation failed!"));
-
-//# endif
-//#else
-    /* if we weren't built against OpenSSL with hostname matching we
-	 * could not have matched the hostname, so this would be an automatic
-	 * tls_auth_fail if there is a hostname provided*/
-//    if (upstream->tls_auth_name[0]) {
-//        upstream->tls_auth_state = GETDNS_AUTH_FAILED;
-//        preverify_ok = 0;
-//    }
-//#endif
-    X509* cert = X509_STORE_CTX_get_current_cert(ctx);
-    X509_NAME* iname = cert ? X509_get_issuer_name(cert) : NULL;
-    X509_NAME* sname = cert ? X509_get_subject_name(cert) : NULL;
-
-    print_cn_name("Issuer (cn)", iname);
-    print_cn_name("Subject (cn)", sname);
-
-    /* If nothing has failed yet and we had credentials, we have successfully authenticated*/
-    return preverify_ok;
+	return preverify_ok;
 }
-
 
 
 /**
@@ -188,30 +113,27 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 static int
 setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char* auth_domain_name)
 {
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** auth domain name %s", auth_domain_name));
-    tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
-    if(!tp->ssl) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** cannot create SSL object"));
-        SSL_free(tp->ssl);
-        return 0;
-    }
-//    tp->ssl_shake_state = ssl_shake_write;
+	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** auth domain name %s", auth_domain_name));
+	tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
+	if(!tp->ssl) {
+		SSL_free(tp->ssl);
+		return 0;
+	}
 
-    SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, tls_verify_callback);
-    //TODO get parameter for hostname
-    if(!SSL_set1_host(tp->ssl, auth_domain_name)) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL_set1_host failed"));
-        SSL_free(tp->ssl);
-        tp->ssl = NULL;
-        return 0;
-    }
+	SSL_set_verify(tp->ssl, SSL_VERIFY_PEER, tls_verify_callback);
+	if(!SSL_set1_host(tp->ssl, auth_domain_name)) {
+		log_msg(LOG_ERR, "xfrd tcp: SSL set host failed");
+		SSL_free(tp->ssl);
+		tp->ssl = NULL;
+		return 0;
+	}
 
-    // Only trust 1.3
-    if (!set_min_version_ssl(tp->ssl, TLS1_3_VERSION)) {
-        return 0;
-    }
+	/* Only trust 1.3 */
+	if (!set_min_version_ssl(tp->ssl, TLS1_3_VERSION)) {
+		return 0;
+	}
 
-    return 1;
+	return 1;
 }
 
 
@@ -250,15 +172,15 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	tcp_set->tcp_waiting_first = 0;
 	tcp_set->tcp_waiting_last = 0;
 	// Set up SSL Context
-	tcp_set->ssl_ctx = create_context();
+	tcp_set->ssl_ctx = create_ssl_context();
     for(i=0; i<XFRD_MAX_TCP; i++)
-		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region, tcp_set);
+		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region);
 	tcp_set->pipetree = rbtree_create(region, &xfrd_pipe_cmp);
 	return tcp_set;
 }
 
 struct xfrd_tcp_pipeline*
-xfrd_tcp_pipeline_create(region_type* region, struct xfrd_tcp_set* tcp_set)
+xfrd_tcp_pipeline_create(region_type* region)
 {
 	int i;
 	struct xfrd_tcp_pipeline* tp = (struct xfrd_tcp_pipeline*)
@@ -1127,9 +1049,9 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
                         (char*) &tcp->msglen + tcp->total_bytes,
                         sizeof(tcp->msglen) - tcp->total_bytes);
         if (received <= 0) {
-            int err =SSL_get_error(ssl, received);
+            int err = SSL_get_error(ssl, received);
             DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-                    "xfrd: *** xyzzy ssl_read returned error %d", err));
+                    "xfrd: *** ssl_read returned error %d", err));
 
             if(err == SSL_ERROR_ZERO_RETURN) {
                 /* EOF */
@@ -1179,7 +1101,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     ERR_clear_error();
 
     DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-            "xfrd: *** xyzzy doing ssl_read again!"));
+            "xfrd: *** doing ssl_read again"));
 
     received = SSL_read(ssl, buffer_current(tcp->packet),
                     buffer_remaining(tcp->packet));
@@ -1187,7 +1109,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     if (received <= 0) {
         int err =SSL_get_error(ssl, received);
         DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-                "xfrd: *** xyzzy ssl_read returned error %d", err));
+                "xfrd: *** ssl_read returned error %d", err));
 
         if(err == SSL_ERROR_ZERO_RETURN) {
             /* EOF */
@@ -1312,10 +1234,10 @@ xfrd_tcp_read(struct xfrd_tcp_pipeline* tp)
 //	ret = conn_read(tcp);
 	ret = conn_read_ssl(tcp, tp->ssl);
     DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-            "xfrd: *** xyzzy ssl conn_read returned %d", ret));
+            "xfrd: *** ssl conn_read returned %d", ret));
 	if(ret == -1) {
 		DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-			"xfrd: *** xyzzy ssl conn_read returned -1, stopping pipe"));
+			"xfrd: *** ssl conn_read returned -1, stopping pipe"));
 		xfrd_tcp_pipe_stop(tp);
 		return;
 	}

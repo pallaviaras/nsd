@@ -228,12 +228,12 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		for(acl=pat->request_xfr; acl; acl=acl->next)
 		{
-		    /* Find auth*/
-            acl->auth_options = auth_options_find(opt, acl->auth_name);
-            if(acl->auth_name && !acl->auth_options)
-                c_error("auth %s in pattern %s could not be found",
-                        acl->auth_name, pat->pname);
-            /* Find key */
+			/* Find auth*/
+			acl->auth_options = auth_options_find(opt, acl->auth_name);
+			if(acl->auth_name && !acl->auth_options)
+				c_error("auth %s in pattern %s could not be found",
+						acl->auth_name, pat->pname);
+			/* Find key */
 			if(acl->nokey || acl->blocked)
 				continue;
 			acl->key_options = key_options_find(opt, acl->key_name);
@@ -252,7 +252,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 	}
 
-    if(cfg_parser->errors > 0)
+	if(cfg_parser->errors > 0)
 	{
 		if(err) {
 			char m[MAXSYSLOGMSGLEN];
@@ -267,7 +267,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		return 0;
 	}
-    return 1;
+	return 1;
 }
 
 void options_zonestatnames_create(struct nsd_options* opt)
@@ -1276,7 +1276,7 @@ struct auth_options*
 auth_options_create(region_type* region)
 {
 	struct auth_options* auth_options;
-    auth_options = (struct auth_options*)region_alloc_zero(region,
+	auth_options = (struct auth_options*)region_alloc_zero(region,
 		sizeof(struct auth_options));
 	return auth_options;
 }

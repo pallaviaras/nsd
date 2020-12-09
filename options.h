@@ -310,7 +310,7 @@ struct acl_options {
 
 	/* auth for XoT */
 	const char* auth_name;
-    struct auth_options* auth_options;
+	struct auth_options* auth_options;
 } ATTR_PACKED;
 
 /*
