@@ -28,26 +28,17 @@
 #include <openssl/err.h>
 
 
-void configure_context(SSL_CTX *ctx)
-{
-	if (SSL_CTX_set_default_verify_paths(ctx) != 1)
-		DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Error loading trust store"));
-	//TODO error out?
-	//TODO default user-provided context?
-}
-
 SSL_CTX*
 create_ssl_context()
 {
 	SSL_CTX *ctx;
-	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Creating SSL context"));
+	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Creating SSL context"));
 	ctx = SSL_CTX_new(TLS_client_method());
 	if (!ctx) {
 		log_msg(LOG_ERR, "xfrd tcp: Unable to create SSL ctxt");
 	}
-	else {
-		configure_context(ctx);
-		//TODO error handling if configure failure? check
+	else if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+	    log_msg(LOG_ERR, "xfrd tcp: Unable to set default verify paths");
 	}
 	return ctx;
 }
@@ -70,22 +61,6 @@ create_ssl_fd(void* ssl_ctx, int fd)
 	return ssl;
 }
 
-static int
-set_min_version_ssl(SSL *ssl, int version)
-{
-	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
-	if (!SSL_set_min_proto_version(ssl, version)) {
-		log_msg(LOG_ERR, "xfrd tcp: Unable to set minimum TLS version 1.3");
-		SSL_free(ssl);
-		ssl = NULL;
-		return 0;
-	}
-	return 1;
-}
-
-/*
- * TODO: do we even need this until we SPKI pin validation?
- */
 int
 tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
@@ -129,14 +104,16 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char
 	}
 
 	/* Only trust 1.3 */
-	if (!set_min_version_ssl(tp->ssl, TLS1_3_VERSION)) {
-		return 0;
-	}
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
+    if (!SSL_set_min_proto_version(tp->ssl, TLS1_3_VERSION)) {
+        log_msg(LOG_ERR, "xfrd tcp: Unable to set minimum TLS version 1.3");
+        SSL_free(tp->ssl);
+        tp->ssl = NULL;
+        return 0;
+    }
 
 	return 1;
 }
-
-
 
 
 /* sort tcppipe, first on IP address, for an IPaddresss, sort on num_unused */
@@ -696,46 +673,45 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->tcp_r->fd = fd;
 	tp->tcp_w->fd = fd;
 
-
-
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, trying to do SSL connect"));
-
-    if(!setup_ssl(tp, set, zone->master->auth_options->auth_domain_name)) {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Cannot setup SSL on pipeline"));
-    } else {
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** SSL setup successfully!"));
-    }
-
-    int ret, err;
-    while(1) {
-        ERR_clear_error();
-        if( (ret=SSL_do_handshake(tp->ssl)) == 1) {
-            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL handshake worked!"));
-            break;
-        }
-        err = SSL_get_error(tp->ssl, ret);
-        if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
-            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL connect failed in tcp open with return value %d", err));
-            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Min proto version for ctx is %lx and object is %lx",
-                    SSL_CTX_get_min_proto_version(xfrd->tcp_set->ssl_ctx),
-                    SSL_get_min_proto_version(tp->ssl)));
+    /* Check if an auth name is configured which means we should try to establish an SSL connection */
+    if (set->ssl_ctx && zone->master->auth_options->auth_domain_name) {
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Trying to do SSL connect"));
+        if (!setup_ssl(tp, set, zone->master->auth_options->auth_domain_name)) {
+            log_msg(LOG_ERR, "xfrd: Cannot setup SSL on pipeline");
             close(fd);
             xfrd_set_refresh_now(zone);
             return 0;
+        } else {
+            DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: SSL setup successfully!"));
         }
-        /* else wants to be called again */
-    }
 
-    /* Validate the server */
-    X509* cert = SSL_get_peer_certificate(tp->ssl);
-    if (!cert) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** failed to get cert from server"));
-    }
-    long res = SSL_get_verify_result(tp->ssl);
-    if(!(X509_V_OK == res)) {
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL verify got result %ld", res));
-    }
+        int ret, err;
+        while (1) {
+            ERR_clear_error();
+            if ((ret = SSL_do_handshake(tp->ssl)) == 1) {
+                DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: SSL handshake worked!"));
+                break;
+            }
+            err = SSL_get_error(tp->ssl, ret);
+            if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+                log_msg(LOG_ERR, "xfrd: SSL connect failed in tcp open with return value %d", err);
+                close(fd);
+                xfrd_set_refresh_now(zone);
+                return 0;
+            }
+            /* else wants to be called again */
+        }
 
+        /* Validate the server */
+        X509 *cert = SSL_get_peer_certificate(tp->ssl);
+        if (!cert) {
+            log_msg(LOG_ERR, "xfrd: failed to get cert from server");
+        }
+        long res = SSL_get_verify_result(tp->ssl);
+        if (X509_V_OK != res) {
+            log_msg(LOG_ERR, "xfrd: SSL verify got result %ld", res);
+        }
+    }
 
     /* set the tcp pipe event */
 	if(tp->handler_added)
@@ -807,13 +783,13 @@ int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
     ssize_t sent;
 
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in conn_write_ssl"));
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: in conn_write_ssl"));
 
     if(tcp->total_bytes < sizeof(tcp->msglen)) {
         uint16_t sendlen = htons(tcp->msglen);
 
         // send
-        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL sending write"));
+        DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: SSL sending write"));
         int request_length = sizeof(tcp->msglen) - tcp->total_bytes;
         sent = SSL_write(ssl,
                           (const char*)&sendlen + tcp->total_bytes,
@@ -823,10 +799,10 @@ int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
         switch(SSL_get_error(ssl,sent)) {
             case SSL_ERROR_NONE:
                 if(request_length != sent)
-                    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Incomplete write in conn_write_ssl"));
+                    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: Incomplete write in conn_write_ssl"));
                 break;
             default:
-                DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** generic write problem in conn_write_ssl"));
+                DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: generic write problem in conn_write_ssl"));
         }
 
         if(sent == -1) {
@@ -987,12 +963,18 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 			return;
 		}
 	}
-//	ret = conn_write(tcp);
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** zone %s mapping to tcp conn of %s with port %d, attempting SSL write",
-            zone->apex_str, zone->master->ip_address_spec, zone->master->port));
-    ret = conn_write_ssl(tcp, tp->ssl);
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** conn_write_ssl returned %d", ret));
-    if(ret == -1) {
+	if (tp->ssl) {
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: zone %s mapping to tcp conn of %s with port %d, "
+                                       "attempting SSL write",
+                                       zone->apex_str,
+                                       zone->master->ip_address_spec,
+                                       zone->master->port));
+        ret = conn_write_ssl(tcp, tp->ssl);
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: conn_write_ssl returned %d", ret));
+    } else {
+        ret = conn_write(tcp);
+    }
+	if(ret == -1) {
 		log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 		xfrd_tcp_pipe_stop(tp);
 		return;
@@ -1013,11 +995,15 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 		/* setup to write for this zone */
 		xfrd_tcp_setup_write_packet(tp, tp->tcp_send_first);
 		/* attempt to write for this zone (if success, continue loop)*/
-//		ret = conn_write(tcp);
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** zone %s mapping to tcp conn of %s, attempting YET ANOTHER SSL write",
-                zone->apex_str, zone->master->ip_address_spec));
-		ret = conn_write_ssl(tcp, tp->ssl);
-        DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** conn_write_ssl returned %d", ret));
+		if (tp->ssl) {
+            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: zone %s mapping to tcp conn of %s, another write",
+                    zone->apex_str,
+                    zone->master->ip_address_spec));
+            ret = conn_write_ssl(tcp, tp->ssl);
+            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: conn_write_ssl returned %d", ret));
+		} else {
+            ret = conn_write(tcp);
+        }
         if(ret == -1) {
 			log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 			xfrd_tcp_pipe_stop(tp);
@@ -1074,8 +1060,6 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
             /* EOF */
             return -1;
         }
-
-
 
         tcp->total_bytes += received;
         if(tcp->total_bytes < sizeof(tcp->msglen)) {
@@ -1231,13 +1215,16 @@ xfrd_tcp_read(struct xfrd_tcp_pipeline* tp)
 	struct xfrd_tcp* tcp = tp->tcp_r;
 	int ret;
 	enum xfrd_packet_result pkt_result;
-//	ret = conn_read(tcp);
-	ret = conn_read_ssl(tcp, tp->ssl);
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-            "xfrd: *** ssl conn_read returned %d", ret));
+	if (tp->ssl) {
+        ret = conn_read_ssl(tcp, tp->ssl);
+        DEBUG(DEBUG_XFRD,1, (LOG_INFO,
+                "xfrd: ssl conn_read returned %d", ret));
+    } else {
+        ret = conn_read(tcp);
+    }
 	if(ret == -1) {
 		DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-			"xfrd: *** ssl conn_read returned -1, stopping pipe"));
+			"xfrd: conn_read returned -1, stopping pipe"));
 		xfrd_tcp_pipe_stop(tp);
 		return;
 	}
