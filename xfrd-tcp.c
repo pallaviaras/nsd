@@ -82,13 +82,13 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
  * Setup SSL
  * - Create SSL object
  * - Connect the object with file descriptor TCP reading/writing
- * - Set auth
+ * - Set tls_auth
  * - Set version
  */
 static int
 setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char* auth_domain_name)
 {
-	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: SSL auth domain name %s", auth_domain_name));
+	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: SSL tls_auth domain name %s", auth_domain_name));
 	tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
 	if(!tp->ssl) {
 		SSL_free(tp->ssl);
@@ -671,13 +671,13 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->tcp_r->fd = fd;
 	tp->tcp_w->fd = fd;
 
-    /* Check if an auth name is configured which means we should try to establish an SSL connection */
+    /* Check if an tls_auth name is configured which means we should try to establish an SSL connection */
 	if (set->ssl_ctx
-		&& zone->master->auth_options
-		&& zone->master->auth_options->auth_domain_name) {
+		&& zone->master->tls_auth_options
+		&& zone->master->tls_auth_options->auth_domain_name) {
 
         DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Trying to do SSL connect"));
-        if (!setup_ssl(tp, set, zone->master->auth_options->auth_domain_name)) {
+        if (!setup_ssl(tp, set, zone->master->tls_auth_options->auth_domain_name)) {
             log_msg(LOG_ERR, "xfrd: Cannot setup SSL on pipeline");
             close(fd);
             xfrd_set_refresh_now(zone);

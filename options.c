@@ -49,7 +49,7 @@ nsd_options_create(region_type* region)
 	opt->zonestatnames = rbtree_create(opt->region, rbtree_strcmp);
 	opt->patterns = rbtree_create(region, rbtree_strcmp);
 	opt->keys = rbtree_create(region, rbtree_strcmp);
-	opt->auths = rbtree_create(region, rbtree_strcmp);
+	opt->tls_auths = rbtree_create(region, rbtree_strcmp);
 	opt->ip_addresses = NULL;
 	opt->ip_transparent = 0;
 	opt->ip_freebind = 0;
@@ -184,7 +184,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 	cfg_parser->pattern = NULL;
 	cfg_parser->zone = NULL;
 	cfg_parser->key = NULL;
-	cfg_parser->auth = NULL;
+	cfg_parser->tls_auth = NULL;
 
 	in = fopen(cfg_parser->filename, "r");
 	if(!in) {
@@ -228,11 +228,11 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		for(acl=pat->request_xfr; acl; acl=acl->next)
 		{
-			/* Find auth*/
-			acl->auth_options = auth_options_find(opt, acl->auth_name);
-			if(acl->auth_name && !acl->auth_options)
-				c_error("auth %s in pattern %s could not be found",
-						acl->auth_name, pat->pname);
+			/* Find tls_auth */
+			acl->tls_auth_options = tls_auth_options_find(opt, acl->tls_auth_name);
+			if(acl->tls_auth_name && !acl->tls_auth_options)
+				c_error("tls_auth %s in pattern %s could not be found",
+						acl->tls_auth_name, pat->pname);
 			/* Find key */
 			if(acl->nokey || acl->blocked)
 				continue;
@@ -1272,13 +1272,12 @@ key_options_create(region_type* region)
 	return key;
 }
 
-struct auth_options*
-auth_options_create(region_type* region)
+struct tls_auth_options*
+tls_auth_options_create(region_type* region)
 {
-	struct auth_options* auth_options;
-	auth_options = (struct auth_options*)region_alloc_zero(region,
-		sizeof(struct auth_options));
-	return auth_options;
+	struct tls_auth_options* tls_auth_options;
+	tls_auth_options = (struct tls_auth_options*)region_alloc_zero(region, sizeof(struct tls_auth_options));
+	return tls_auth_options;
 }
 
 void
@@ -1296,17 +1295,17 @@ key_options_find(struct nsd_options* opt, const char* name)
 }
 
 void
-auth_options_insert(struct nsd_options* opt, struct auth_options* auth)
+tls_auth_options_insert(struct nsd_options* opt, struct tls_auth_options* auth)
 {
 	if(!auth->name) return;
 	auth->node.key = auth->name;
-	(void)rbtree_insert(opt->auths, &auth->node);
+	(void)rbtree_insert(opt->tls_auths, &auth->node);
 }
 
-struct auth_options*
-auth_options_find(struct nsd_options* opt, const char* name)
+struct tls_auth_options*
+tls_auth_options_find(struct nsd_options* opt, const char* name)
 {
-	return (struct auth_options*)rbtree_search(opt->auths, name);
+	return (struct tls_auth_options*)rbtree_search(opt->tls_auths, name);
 }
 
 /** remove tsig_key contents */
@@ -1794,7 +1793,7 @@ config_make_zonefile(struct zone_options* zone, struct nsd* nsd)
 	static char f[1024];
 	/* if not a template, return as-is */
 	if(!strchr(zone->pattern->zonefile, '%')) {
-		if (nsd->chrootdir && nsd->chrootdir[0] && 
+		if (nsd->chrootdir && nsd->chrootdir[0] &&
 			zone->pattern->zonefile &&
 			zone->pattern->zonefile[0] == '/' &&
 			strncmp(zone->pattern->zonefile, nsd->chrootdir,
