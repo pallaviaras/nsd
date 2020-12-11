@@ -726,8 +726,6 @@ key_option:
       }
     } ;
 
-
-
 zone:
     VAR_ZONE
       {
@@ -834,7 +832,7 @@ pattern_or_zone_option:
         yyerror("address range used for request-xfr");
       append_acl(&cfg_parser->pattern->request_xfr, acl);
     }
-    | VAR_REQUEST_XFR STRING STRING STRING
+  | VAR_REQUEST_XFR STRING STRING STRING
     {
       acl_options_type *acl = parse_acl_info(cfg_parser->opt->region, $2, $3);
       if(acl->blocked)
@@ -854,7 +852,7 @@ pattern_or_zone_option:
         yyerror("address range used for request-xfr");
       append_acl(&cfg_parser->pattern->request_xfr, acl);
     }
-    | VAR_REQUEST_XFR VAR_AXFR STRING STRING STRING
+  | VAR_REQUEST_XFR VAR_AXFR STRING STRING STRING
     {
       acl_options_type *acl = parse_acl_info(cfg_parser->opt->region, $3, $4);
       acl->use_axfr_only = 1;

@@ -88,7 +88,7 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 static int
 setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char* auth_domain_name)
 {
-	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** auth domain name %s", auth_domain_name));
+	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: SSL auth domain name %s", auth_domain_name));
 	tp->ssl = create_ssl_fd(tcp_set->ssl_ctx, tp->tcp_w->fd);
 	if(!tp->ssl) {
 		SSL_free(tp->ssl);
@@ -104,7 +104,7 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char
 	}
 
 	/* Only trust 1.3 */
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** Setting minimum TLS version 1.3 for SSL object"));
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Setting minimum TLS version 1.3 for SSL object"));
     if (!SSL_set_min_proto_version(tp->ssl, TLS1_3_VERSION)) {
         log_msg(LOG_ERR, "xfrd tcp: Unable to set minimum TLS version 1.3");
         SSL_free(tp->ssl);
@@ -395,7 +395,6 @@ static void
 xfrd_tcp_pipe_stop(struct xfrd_tcp_pipeline* tp)
 {
 	int i, conn = -1;
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** num unused %d, num skip %d", tp->num_unused, tp->num_skip));
     assert(tp->num_unused < ID_PIPE_NUM); /* at least one 'in-use' */
 	assert(ID_PIPE_NUM - tp->num_unused > tp->num_skip); /* at least one 'nonskip' */
 	/* need to retry for all the zones connected to it */
@@ -650,8 +649,7 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 
 	tp->ip_len = xfrd_acl_sockaddr_to(zone->master, &tp->ip);
 
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** in tcp open, about to bind"));
-
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: in tcp open, about to bind"));
 
     /* bind it */
 	if (!xfrd_bind_local_interface(fd, zone->zone_options->pattern->
@@ -659,7 +657,7 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		close(fd);
 		xfrd_set_refresh_now(zone);
 		return 0;
-        }
+	}
 
 	conn = connect(fd, (struct sockaddr*)&tp->ip, tp->ip_len);
 	if (conn == -1 && errno != EINPROGRESS) {
@@ -674,7 +672,10 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->tcp_w->fd = fd;
 
     /* Check if an auth name is configured which means we should try to establish an SSL connection */
-    if (set->ssl_ctx && zone->master->auth_options->auth_domain_name) {
+	if (set->ssl_ctx
+		&& zone->master->auth_options
+		&& zone->master->auth_options->auth_domain_name) {
+
         DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Trying to do SSL connect"));
         if (!setup_ssl(tp, set, zone->master->auth_options->auth_domain_name)) {
             log_msg(LOG_ERR, "xfrd: Cannot setup SSL on pipeline");
@@ -827,7 +828,7 @@ int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     assert(tcp->total_bytes < tcp->msglen + sizeof(tcp->msglen));
 
     int request_length = buffer_remaining(tcp->packet);
-    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: *** SSL sending another write"));
+    DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: SSL sending another write"));
 
     sent = SSL_write(ssl,
                      buffer_current(tcp->packet),
@@ -837,10 +838,10 @@ int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     switch(SSL_get_error(ssl,sent)) {
         case SSL_ERROR_NONE:
             if(request_length != sent)
-                DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** Incomplete write in conn_write_ssl"));
+                DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: Incomplete write in conn_write_ssl"));
             break;
         default:
-            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** generic write problem in conn_write_ssl"));
+            DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: generic write problem in conn_write_ssl"));
     }
 
 
@@ -939,7 +940,6 @@ int conn_write(struct xfrd_tcp* tcp)
 void
 xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 {
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: *** tcp write!"));
     int ret;
 	struct xfrd_tcp* tcp = tp->tcp_w;
 	assert(zone->tcp_conn != -1);
@@ -1027,7 +1027,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     ssize_t received;
     /* receive leading packet length bytes */
     DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-            "xfrd: *** in ssl_read total bytes %d and msglen %lu", tcp->total_bytes, sizeof(tcp->msglen)));
+            "xfrd: in ssl_read total bytes %d and msglen %lu", tcp->total_bytes, sizeof(tcp->msglen)));
     if(tcp->total_bytes < sizeof(tcp->msglen)) {
         ERR_clear_error();
 
@@ -1037,7 +1037,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
         if (received <= 0) {
             int err = SSL_get_error(ssl, received);
             DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-                    "xfrd: *** ssl_read returned error %d", err));
+                    "xfrd: ssl_read returned error %d", err));
 
             if(err == SSL_ERROR_ZERO_RETURN) {
                 /* EOF */
@@ -1085,7 +1085,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     ERR_clear_error();
 
     DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-            "xfrd: *** doing ssl_read again"));
+            "xfrd: doing ssl_read again"));
 
     received = SSL_read(ssl, buffer_current(tcp->packet),
                     buffer_remaining(tcp->packet));
@@ -1093,7 +1093,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
     if (received <= 0) {
         int err =SSL_get_error(ssl, received);
         DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-                "xfrd: *** ssl_read returned error %d", err));
+                "xfrd: ssl_read returned error %d", err));
 
         if(err == SSL_ERROR_ZERO_RETURN) {
             /* EOF */
@@ -1353,10 +1353,12 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->handler_added = 0;
 
     /* close SSL */
-    DEBUG(DEBUG_XFRD,1, (LOG_INFO, "*** Shutting down SSL"));
-    SSL_shutdown(tp->ssl);
-    SSL_free(tp->ssl);
-    tp->ssl = NULL;
+    if (tp->ssl) {
+		DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Shutting down SSL"));
+		SSL_shutdown(tp->ssl);
+		SSL_free(tp->ssl);
+		tp->ssl = NULL;
+	}
 
 	/* fd in tcp_r and tcp_w is the same, close once */
 	if(tp->tcp_r->fd != -1)
