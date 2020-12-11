@@ -28,7 +28,7 @@
 #include <openssl/err.h>
 
 
-SSL_CTX*
+static SSL_CTX*
 create_ssl_context()
 {
 	SSL_CTX *ctx;
@@ -43,7 +43,7 @@ create_ssl_context()
 	return ctx;
 }
 
-void*
+static void*
 create_ssl_fd(void* ssl_ctx, int fd)
 {
 	SSL* ssl = SSL_new((SSL_CTX*)ssl_ctx);
@@ -61,7 +61,7 @@ create_ssl_fd(void* ssl_ctx, int fd)
 	return ssl;
 }
 
-int
+static int
 tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
 
@@ -148,7 +148,7 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	tcp_set->tcp_count = 0;
 	tcp_set->tcp_waiting_first = 0;
 	tcp_set->tcp_waiting_last = 0;
-	// Set up SSL Context
+	/* Set up SSL context */
 	tcp_set->ssl_ctx = create_ssl_context();
     for(i=0; i<XFRD_MAX_TCP; i++)
 		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region);
@@ -780,7 +780,8 @@ tcp_conn_ready_for_reading(struct xfrd_tcp* tcp)
 	buffer_clear(tcp->packet);
 }
 
-int conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
+static int
+conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
     ssize_t sent;
 
@@ -1021,7 +1022,7 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 	tcp_pipe_reset_timeout(tp);
 }
 
-int
+static int
 conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
     ssize_t received;
