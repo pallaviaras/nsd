@@ -787,6 +787,11 @@ acl_equal(struct acl_options* p, struct acl_options* q)
 	} else if(p->key_name && !q->key_name) return 0;
 	else if(!p->key_name && q->key_name) return 0;
 	/* key_options is derived from key_name */
+	if(p->tls_auth_name && q->tls_auth_name) {
+		if(strcmp(p->tls_auth_name, q->tls_auth_name)!=0) return 0;
+	} else if(p->tls_auth_name && !q->tls_auth_name) return 0;
+	else if(!p->tls_auth_name && q->tls_auth_name) return 0;
+	/* tls_auth_options is derived from tls_auth_name */
 	return 1;
 }
 
@@ -853,6 +858,9 @@ acl_delete(region_type* region, struct acl_options* acl)
 	if(acl->key_name)
 		region_recycle(region, (void*)acl->key_name,
 			strlen(acl->key_name)+1);
+	if(acl->tls_auth_name)
+		region_recycle(region, (void*)acl->tls_auth_name,
+			strlen(acl->tls_auth_name)+1);
 	/* key_options is a convenience pointer, not owned by the acl */
 	region_recycle(region, acl, sizeof(*acl));
 }
@@ -907,8 +915,11 @@ copy_acl(region_type* region, struct acl_options* a)
 		b->ip_address_spec = region_strdup(region, a->ip_address_spec);
 	if(a->key_name)
 		b->key_name = region_strdup(region, a->key_name);
+	if(a->tls_auth_name)
+		b->tls_auth_name = region_strdup(region, a->tls_auth_name);
 	b->next = NULL;
 	b->key_options = NULL;
+	b->tls_auth_options = NULL;
 	return b;
 }
 
@@ -922,6 +933,10 @@ copy_acl_list(struct nsd_options* opt, struct acl_options* a)
 		if(b->key_name)
 			b->key_options = key_options_find(opt, b->key_name);
 		else	b->key_options = NULL;
+		/* fixup tls_auth_options */
+		if(b->tls_auth_name)
+			b->tls_auth_options = tls_auth_options_find(opt, b->tls_auth_name);
+		else	b->tls_auth_options = NULL;
 
 		/* link as last into list */
 		b->next = NULL;
@@ -1154,6 +1169,7 @@ marshal_acl(struct buffer* b, struct acl_options* acl)
 	buffer_write(b, acl, sizeof(*acl));
 	marshal_str(b, acl->ip_address_spec);
 	marshal_str(b, acl->key_name);
+	marshal_str(b, acl->tls_auth_name);
 }
 
 static struct acl_options*
@@ -1164,8 +1180,10 @@ unmarshal_acl(region_type* r, struct buffer* b)
 	buffer_read(b, acl, sizeof(*acl));
 	acl->next = NULL;
 	acl->key_options = NULL;
+	acl->tls_auth_options = NULL;
 	acl->ip_address_spec = unmarshal_str(r, b);
 	acl->key_name = unmarshal_str(r, b);
+	acl->tls_auth_name = unmarshal_str(r, b);
 	return acl;
 }
 
@@ -1921,6 +1939,7 @@ parse_acl_info(region_type* region, char* ip, const char* key)
 	acl->ixfr_disabled = 0;
 	acl->bad_xfr_count = 0;
 	acl->key_options = 0;
+	acl->tls_auth_options = 0;
 	acl->is_ipv6 = 0;
 	acl->port = 0;
 	memset(&acl->addr, 0, sizeof(union acl_addr_storage));

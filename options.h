@@ -328,9 +328,9 @@ struct key_options {
  * TLS Auth definition for XoT
  */
 struct tls_auth_options {
-    rbnode_type node; /* key of tree is name */
-    char* name;
-    char* auth_domain_name;
+	rbnode_type node; /* key of tree is name */
+	char* name;
+	char* auth_domain_name;
 };
 
 /** zone list free space */

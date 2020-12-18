@@ -630,11 +630,11 @@ tls_auth:
     {
       struct tls_auth_options *tls_auth = cfg_parser->tls_auth;
       if(tls_auth->name == NULL) {
-        yyerror("tls auth has no name");
+        yyerror("tls-auth has no name");
       } else if(tls_auth->auth_domain_name == NULL) {
-        yyerror("tls_auth %s has no auth domain name", tls_auth->name);
+        yyerror("tls-auth %s has no auth-domain-name", tls_auth->name);
       } else if(tls_auth_options_find(cfg_parser->opt, tls_auth->name)) {
-        yyerror("duplicate auth %s", tls_auth->name);
+        yyerror("duplicate tls-auth %s", tls_auth->name);
       } else {
       	tls_auth_options_insert(cfg_parser->opt, tls_auth);
         cfg_parser->tls_auth = NULL;
@@ -651,7 +651,7 @@ tls_auth_option:
       dname = (dname_type *)dname_parse(cfg_parser->opt->region, $2);
       cfg_parser->tls_auth->name = region_strdup(cfg_parser->opt->region, $2);
       if(dname == NULL) {
-        yyerror("bad tls_auth name %s", $2);
+        yyerror("bad tls-auth name %s", $2);
       } else {
         region_recycle(cfg_parser->opt->region, dname, dname_total_size(dname));
       }
@@ -725,6 +725,7 @@ key_option:
         memset(data, 0xdd, size); /* wipe secret */
       }
     } ;
+
 
 zone:
     VAR_ZONE
