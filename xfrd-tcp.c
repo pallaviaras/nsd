@@ -217,7 +217,8 @@ xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_storage *to)
 xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_in *to)
 #endif /* INET6 */
 {
-	unsigned int port = acl->port?acl->port:(unsigned)atoi(TCP_PORT);
+	unsigned int port = acl->port?acl->port:(acl->tls_auth_options?
+						(unsigned)atoi(TLS_PORT):(unsigned)atoi(TCP_PORT));
 #ifdef INET6
 	return xfrd_acl_sockaddr(acl, port, to);
 #else
@@ -749,26 +750,19 @@ conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
 	ssize_t sent;
 
-	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: in conn_write_ssl"));
-
 	if(tcp->total_bytes < sizeof(tcp->msglen)) {
 		uint16_t sendlen = htons(tcp->msglen);
-
 		// send
-		DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: SSL sending write"));
 		int request_length = sizeof(tcp->msglen) - tcp->total_bytes;
-		sent = SSL_write(ssl,
-						  (const char*)&sendlen + tcp->total_bytes,
-						  request_length);
-
-
+		sent = SSL_write(ssl, (const char*)&sendlen + tcp->total_bytes,
+						 request_length);
 		switch(SSL_get_error(ssl,sent)) {
 			case SSL_ERROR_NONE:
 				if(request_length != sent)
-					DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: Incomplete write in conn_write_ssl"));
+					log_msg(LOG_ERR, "xfrd: incomplete write of tls");
 				break;
 			default:
-				DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: generic write problem in conn_write_ssl"));
+				log_msg(LOG_ERR, "xfrd: generic write problem with tls");
 		}
 
 		if(sent == -1) {
@@ -793,23 +787,15 @@ conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 	assert(tcp->total_bytes < tcp->msglen + sizeof(tcp->msglen));
 
 	int request_length = buffer_remaining(tcp->packet);
-	DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: SSL sending another write"));
-
-	sent = SSL_write(ssl,
-					 buffer_current(tcp->packet),
-					 request_length);
-
-
+	sent = SSL_write(ssl, buffer_current(tcp->packet), request_length);
 	switch(SSL_get_error(ssl,sent)) {
 		case SSL_ERROR_NONE:
 			if(request_length != sent)
-				DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: Incomplete write in conn_write_ssl"));
+				log_msg(LOG_ERR, "xfrd: incomplete write of tls");
 			break;
 		default:
-			DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: generic write problem in conn_write_ssl"));
+			log_msg(LOG_ERR, "xfrd: generic write problem with tls");
 	}
-
-
 	if(sent == -1) {
 		if(errno == EAGAIN || errno == EINTR) {
 			/* write would block, try later */
@@ -829,7 +815,6 @@ conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 
 	assert(tcp->total_bytes == tcp->msglen + sizeof(tcp->msglen));
 	return 1;
-
 }
 
 int conn_write(struct xfrd_tcp* tcp)
@@ -981,25 +966,19 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
 	ssize_t received;
 	/* receive leading packet length bytes */
-	DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-			"xfrd: in ssl_read total bytes %d and msglen %lu", tcp->total_bytes, sizeof(tcp->msglen)));
 	if(tcp->total_bytes < sizeof(tcp->msglen)) {
 		ERR_clear_error();
-
 		received = SSL_read(ssl,
 						(char*) &tcp->msglen + tcp->total_bytes,
 						sizeof(tcp->msglen) - tcp->total_bytes);
 		if (received <= 0) {
 			int err = SSL_get_error(ssl, received);
-			DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-					"xfrd: ssl_read returned error %d", err));
-
+			log_msg(LOG_ERR, "ssl_read returned error %d", err);
 			if(err == SSL_ERROR_ZERO_RETURN) {
 				/* EOF */
 				return 0;
 			}
 		}
-
 		if(received == -1) {
 			if(errno == EAGAIN || errno == EINTR) {
 				/* read would block, try later */
@@ -1008,14 +987,13 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 #ifdef ECONNRESET
 				if (verbosity >= 2 || errno != ECONNRESET)
 #endif /* ECONNRESET */
-					log_msg(LOG_ERR, "tcp read %s", strerror(errno));
+					log_msg(LOG_ERR, "tls read sz: %s", strerror(errno));
 				return -1;
 			}
 		} else if(received == 0) {
 			/* EOF */
 			return -1;
 		}
-
 		tcp->total_bytes += received;
 		if(tcp->total_bytes < sizeof(tcp->msglen)) {
 			/* not complete yet, try later */
@@ -1039,23 +1017,17 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 	assert(buffer_remaining(tcp->packet) > 0);
 	ERR_clear_error();
 
-	DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-			"xfrd: doing ssl_read again"));
-
 	received = SSL_read(ssl, buffer_current(tcp->packet),
 					buffer_remaining(tcp->packet));
 
 	if (received <= 0) {
 		int err =SSL_get_error(ssl, received);
-		DEBUG(DEBUG_XFRD,1, (LOG_INFO,
-				"xfrd: ssl_read returned error %d", err));
-
+		log_msg(LOG_ERR, "ssl_read returned error %d", err);
 		if(err == SSL_ERROR_ZERO_RETURN) {
 			/* EOF */
 			return 0;
 		}
 	}
-
 	if(received == -1) {
 		if(errno == EAGAIN || errno == EINTR) {
 			/* read would block, try later */
