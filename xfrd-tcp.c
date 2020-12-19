@@ -24,10 +24,12 @@
 #include "xfrd.h"
 #include "xfrd-disk.h"
 #include "util.h"
+#ifdef HAVE_TLS_1_3
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#endif
 
-
+#ifdef HAVE_TLS_1_3
 static SSL_CTX*
 create_ssl_context()
 {
@@ -54,10 +56,10 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 	int err = X509_STORE_CTX_get_error(ctx);
 	int depth = X509_STORE_CTX_get_error_depth(ctx);
 
-	// report the specific error here, otherwise just get 'unspecified' 
+	// report the specific cert error here, otherwise just get 'unspecified' 
 	// from handshake failure errror code
 	if (!preverify_ok)
-		log_msg(LOG_ERR, "xfrd tls: TLS verify failed - (%d) with depth %d and error %s",
+		log_msg(LOG_ERR, "xfrd tls: TLS verify failed - (%d) depth: %d error: %s",
 				err,
 				depth,
 				X509_verify_cert_error_string(err));
@@ -65,16 +67,18 @@ tls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 }
 
 static int
-setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char* auth_domain_name)
+setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, 
+          const char* auth_domain_name)
 {
 	if (!tcp_set->ssl_ctx) {
-		log_msg(LOG_ERR, "xfrd tls: No TLS CTX available, cannot set up XoT");
+		log_msg(LOG_ERR, "xfrd tls: No TLS CTX, cannot set up XFR-over-TLS");
 		return 0;
 	}
-	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: setting up TLS for tls_auth domain name %s", auth_domain_name));
+	DEBUG(DEBUG_XFRD,1, (LOG_INFO, "xfrd: setting up TLS for tls_auth domain name %s", 
+						 auth_domain_name));
 	tp->ssl = SSL_new((SSL_CTX*)tcp_set->ssl_ctx);
 	if(!tp->ssl) {
-		log_msg(LOG_ERR, "xfrd tls: Unable to create SSL object");
+		log_msg(LOG_ERR, "xfrd tls: Unable to create TLS object");
 		return 0;
 	}
 	SSL_set_connect_state(tp->ssl);
@@ -95,6 +99,7 @@ setup_ssl(struct xfrd_tcp_pipeline* tp, struct xfrd_tcp_set* tcp_set, const char
 	}
 	return 1;
 }
+#endif
 
 /* sort tcppipe, first on IP address, for an IPaddresss, sort on num_unused */
 static int
@@ -128,11 +133,15 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	tcp_set->tcp_count = 0;
 	tcp_set->tcp_waiting_first = 0;
 	tcp_set->tcp_waiting_last = 0;
+#ifdef HAVE_TLS_1_3
 	/* Set up SSL context */
 	tcp_set->ssl_ctx = create_ssl_context();
 	if (tcp_set->ssl_ctx == NULL)
-		log_msg(LOG_ERR, "xfrd: xfr-over-tls not available");
-    for(i=0; i<XFRD_MAX_TCP; i++)
+		log_msg(LOG_ERR, "xfrd: XFR-over-TLS not available");
+#else
+	log_msg(LOG_WARN, "xfrd: No TLS 1.3 support - XFR-over-TLS not available");
+#endif
+	for(i=0; i<XFRD_MAX_TCP; i++)
 		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region);
 	tcp_set->pipetree = rbtree_create(region, &xfrd_pipe_cmp);
 	return tcp_set;
@@ -217,8 +226,12 @@ xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_storage *to)
 xfrd_acl_sockaddr_to(acl_options_type* acl, struct sockaddr_in *to)
 #endif /* INET6 */
 {
+#ifdef HAVE_TLS_1_3
 	unsigned int port = acl->port?acl->port:(acl->tls_auth_options?
 						(unsigned)atoi(TLS_PORT):(unsigned)atoi(TCP_PORT));
+#else
+	unsigned int port = acl->port?acl->port:(unsigned)atoi(TCP_PORT);
+#endif
 #ifdef INET6
 	return xfrd_acl_sockaddr(acl, port, to);
 #else
@@ -649,17 +662,23 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 	tp->tcp_r->fd = fd;
 	tp->tcp_w->fd = fd;
 
-    /* Check if an tls_auth name is configured which means we should try to establish an SSL connection */
+	/* Check if an tls_auth name is configured which means we should try to
+	   establish an SSL connection */
 	if (zone->master->tls_auth_options &&
 		zone->master->tls_auth_options->auth_domain_name) {
+#ifdef HAVE_TLS_1_3
 		if (!setup_ssl(tp, set, zone->master->tls_auth_options->auth_domain_name)) {
-			log_msg(LOG_ERR, "xfrd: Cannot setup SSL on pipeline for %s",
-					zone->master->ip_address_spec);
+			log_msg(LOG_ERR, "xfrd: Cannot setup TLS on pipeline for %s to %s",
+					zone->apex_str, zone->master->ip_address_spec);
 			close(fd);
 			xfrd_set_refresh_now(zone);
 			return 0;
 		}
-
+		// TODO: There is a nasty case where the far end is listening on TCP 
+		// but not TLS. In that case the SSL_do_handshake function will loop, 
+		// returning SSL_ERROR_WANT_READ for the tcp_timeout (120s). Not 100% 
+		// sure of the best way to interrupt this - heven't worked out exactly
+		// what event handler is currently catching this...
 		int ret, err;
 		while (1) {
 			ERR_clear_error();
@@ -669,14 +688,22 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 			}
 			err = SSL_get_error(tp->ssl, ret);
 			if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
-				log_msg(LOG_ERR, "xfrd: TLS handshake failed with return value: %s", 
-						X509_verify_cert_error_string(err));
+				log_msg(LOG_ERR, "xfrd: TLS handshake failed with value: %d", 
+						err);
 				close(fd);
 				xfrd_set_refresh_now(zone);
 				return 0;
 			}
 			/* else wants to be called again */
 		}
+#else
+		log_msg(LOG_ERR, "xfrd: TLS 1.3 is not available, XFR-over-TLS is "
+						 "not supported for %s to %s",
+						  zone->apex_str, zone->master->ip_address_spec));
+		close(fd);
+		xfrd_set_refresh_now(zone);
+		return 0;
+#endif
 	}
 
 	/* set the tcp pipe event */
@@ -745,6 +772,7 @@ tcp_conn_ready_for_reading(struct xfrd_tcp* tcp)
 	buffer_clear(tcp->packet);
 }
 
+#ifdef HAVE_TLS_1_3
 static int
 conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
@@ -816,6 +844,7 @@ conn_write_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 	assert(tcp->total_bytes == tcp->msglen + sizeof(tcp->msglen));
 	return 1;
 }
+#endif
 
 int conn_write(struct xfrd_tcp* tcp)
 {
@@ -913,11 +942,12 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 			return;
 		}
 	}
-	if (tp->ssl) {
+#ifdef HAVE_TLS_1_3
+	if (tp->ssl)
 		ret = conn_write_ssl(tcp, tp->ssl);
-	} else {
+	else
+#endif
 		ret = conn_write(tcp);
-	}
 	if(ret == -1) {
 		log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 		xfrd_tcp_pipe_stop(tp);
@@ -939,11 +969,12 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 		/* setup to write for this zone */
 		xfrd_tcp_setup_write_packet(tp, tp->tcp_send_first);
 		/* attempt to write for this zone (if success, continue loop)*/
-		if (tp->ssl) {
+#ifdef HAVE_TLS_1_3
+		if (tp->ssl)
 			ret = conn_write_ssl(tcp, tp->ssl);
-		} else {
+		else
+#endif
 			ret = conn_write(tcp);
-		}
 		if(ret == -1) {
 			log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 			xfrd_tcp_pipe_stop(tp);
@@ -961,6 +992,7 @@ xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 	tcp_pipe_reset_timeout(tp);
 }
 
+#ifdef HAVE_TLS_1_3
 static int
 conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 {
@@ -1056,7 +1088,7 @@ conn_read_ssl(struct xfrd_tcp* tcp, SSL* ssl)
 	assert(buffer_position(tcp->packet) == tcp->msglen);
 	return 1;
 }
-
+#endif
 
 int
 conn_read(struct xfrd_tcp* tcp)
@@ -1142,11 +1174,12 @@ xfrd_tcp_read(struct xfrd_tcp_pipeline* tp)
 	struct xfrd_tcp* tcp = tp->tcp_r;
 	int ret;
 	enum xfrd_packet_result pkt_result;
-	if (tp->ssl) {
+#ifdef HAVE_TLS_1_3
+	if (tp->ssl)
 		ret = conn_read_ssl(tcp, tp->ssl);
-	} else {
+	else 
+#endif
 		ret = conn_read(tcp);
-	}
 	if(ret == -1) {
 		log_msg(LOG_ERR, "xfrd: failed writing tcp %s", strerror(errno));
 		xfrd_tcp_pipe_stop(tp);
@@ -1276,13 +1309,15 @@ xfrd_tcp_pipe_release(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		event_del(&tp->handler);
 	tp->handler_added = 0;
 
-    /* close SSL */
-    if (tp->ssl) {
+#ifdef HACVE_TLS_1_3
+	/* close SSL */
+	if (tp->ssl) {
 		DEBUG(DEBUG_XFRD, 1, (LOG_INFO, "xfrd: Shutting down TLS"));
 		SSL_shutdown(tp->ssl);
 		SSL_free(tp->ssl);
 		tp->ssl = NULL;
 	}
+#endif
 
 	/* fd in tcp_r and tcp_w is the same, close once */
 	if(tp->tcp_r->fd != -1)
