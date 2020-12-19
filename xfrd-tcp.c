@@ -390,7 +390,7 @@ static void
 xfrd_tcp_pipe_stop(struct xfrd_tcp_pipeline* tp)
 {
 	int i, conn = -1;
-    assert(tp->num_unused < ID_PIPE_NUM); /* at least one 'in-use' */
+	assert(tp->num_unused < ID_PIPE_NUM); /* at least one 'in-use' */
 	assert(ID_PIPE_NUM - tp->num_unused > tp->num_skip); /* at least one 'nonskip' */
 	/* need to retry for all the zones connected to it */
 	/* these could use different lists and go to a different nextmaster*/
@@ -643,13 +643,13 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 
 	tp->ip_len = xfrd_acl_sockaddr_to(zone->master, &tp->ip);
 
-    /* bind it */
+	/* bind it */
 	if (!xfrd_bind_local_interface(fd, zone->zone_options->pattern->
 		outgoing_interface, zone->master, 1)) {
 		close(fd);
 		xfrd_set_refresh_now(zone);
 		return 0;
-	}
+        }
 
 	conn = connect(fd, (struct sockaddr*)&tp->ip, tp->ip_len);
 	if (conn == -1 && errno != EINPROGRESS) {
@@ -676,9 +676,9 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 		}
 		// TODO: There is a nasty case where the far end is listening on TCP 
 		// but not TLS. In that case the SSL_do_handshake function will loop, 
-		// returning SSL_ERROR_WANT_READ for the tcp_timeout (120s). Not 100% 
-		// sure of the best way to interrupt this - heven't worked out exactly
-		// what event handler is currently catching this...
+		// returning SSL_ERROR_WANT_READ for the tcp_timeout (120s). This can 
+		// be handled various ways, not sure of the best one, need to discuss
+		// with Wouter...
 		int ret, err;
 		while (1) {
 			ERR_clear_error();
@@ -688,8 +688,8 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 			}
 			err = SSL_get_error(tp->ssl, ret);
 			if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
-				log_msg(LOG_ERR, "xfrd: TLS handshake failed with value: %d", 
-						err);
+				log_msg(LOG_ERR, "xfrd: TLS handshake failed for %s to %s with value: %d", 
+						zone->apex_str, zone->master->ip_address_spec, err);
 				close(fd);
 				xfrd_set_refresh_now(zone);
 				return 0;
@@ -919,7 +919,7 @@ int conn_write(struct xfrd_tcp* tcp)
 void
 xfrd_tcp_write(struct xfrd_tcp_pipeline* tp, xfrd_zone_type* zone)
 {
-    int ret;
+	int ret;
 	struct xfrd_tcp* tcp = tp->tcp_w;
 	assert(zone->tcp_conn != -1);
 	assert(zone == tp->tcp_send_first);
