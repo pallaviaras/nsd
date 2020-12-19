@@ -139,7 +139,7 @@ struct xfrd_tcp_set* xfrd_tcp_set_create(struct region* region)
 	if (tcp_set->ssl_ctx == NULL)
 		log_msg(LOG_ERR, "xfrd: XFR-over-TLS not available");
 #else
-	log_msg(LOG_WARN, "xfrd: No TLS 1.3 support - XFR-over-TLS not available");
+	log_msg(LOG_WARNING, "xfrd: No TLS 1.3 support - XFR-over-TLS not available");
 #endif
 	for(i=0; i<XFRD_MAX_TCP; i++)
 		tcp_set->tcp_state[i] = xfrd_tcp_pipeline_create(region);
@@ -699,7 +699,7 @@ xfrd_tcp_open(struct xfrd_tcp_set* set, struct xfrd_tcp_pipeline* tp,
 #else
 		log_msg(LOG_ERR, "xfrd: TLS 1.3 is not available, XFR-over-TLS is "
 						 "not supported for %s to %s",
-						  zone->apex_str, zone->master->ip_address_spec));
+						  zone->apex_str, zone->master->ip_address_spec);
 		close(fd);
 		xfrd_set_refresh_now(zone);
 		return 0;
