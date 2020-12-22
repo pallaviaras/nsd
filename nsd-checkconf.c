@@ -197,10 +197,15 @@ quote_acl(acl_options_type* acl)
 {
 	while(acl)
 	{
-		printf("%s %s %s\n", acl->ip_address_spec,
-			acl->nokey?"NOKEY":(acl->blocked?"BLOCKED":
-			(acl->key_name?acl->key_name:"(null)")),
-			acl->tls_auth_name?acl->tls_auth_name:"");
+		if (acl->tls_auth_name)
+			printf("%s %s %s\n", acl->ip_address_spec,
+				acl->nokey?"NOKEY":(acl->blocked?"BLOCKED":
+				(acl->key_name?acl->key_name:"(null)")),
+				acl->tls_auth_name?acl->tls_auth_name:"");
+		else
+			printf("%s %s\n", acl->ip_address_spec,
+				acl->nokey?"NOKEY":(acl->blocked?"BLOCKED":
+				(acl->key_name?acl->key_name:"(null)")));
 		acl=acl->next;
 	}
 }
@@ -215,10 +220,15 @@ print_acl(const char* varname, acl_options_type* acl)
 			printf("AXFR ");
 		if(acl->allow_udp)
 			printf("UDP ");
-		printf("%s %s %s\n", acl->ip_address_spec,
-			acl->nokey?"NOKEY":(acl->blocked?"BLOCKED":
-			(acl->key_name?acl->key_name:"(null)")),
-			acl->tls_auth_name?acl->tls_auth_name:"");
+		if (acl->tls_auth_name)
+			printf("%s %s %s\n", acl->ip_address_spec,
+				acl->nokey?"NOKEY":(acl->blocked?"BLOCKED":
+				(acl->key_name?acl->key_name:"(null)")),
+				acl->tls_auth_name?acl->tls_auth_name:"");
+		else
+			printf("%s %s\n", acl->ip_address_spec,
+				acl->nokey?"NOKEY":(acl->blocked?"BLOCKED":
+				(acl->key_name?acl->key_name:"(null)")));
 		if(verbosity>1) {
 			printf("\t# %s", acl->is_ipv6?"ip6":"ip4");
 			if(acl->port == 0) printf(" noport");
@@ -782,7 +792,7 @@ additional_checks(nsd_options_type* opt, const char* filename)
 		errors ++;
 	}
 	if(errors != 0) {
-		fprintf(stderr, "%s: %d semantic errors in %d zones, %d keys %d tls-auth.\n",
+		fprintf(stderr, "%s: %d semantic errors in %d zones, %d keys, %d tls-auth.\n",
 			filename, errors, (int)nsd_options_num_zones(opt),
 			(int)opt->keys->count,
 			(int)opt->tls_auths->count);
