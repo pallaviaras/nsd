@@ -10,7 +10,6 @@
 #ifndef OPTIONS_H
 #define OPTIONS_H
 
-#include "config.h"
 #include <stdarg.h>
 #include "region-allocator.h"
 #include "rbtree.h"
@@ -485,11 +484,17 @@ int parse_acl_is_ipv6(const char* p);
 int parse_acl_range_type(char* ip, char** mask);
 /* parses subnet mask, fills 0 mask as well */
 void parse_acl_range_subnet(char* p, void* addr, int maxbits);
+/* the acl is for all IPv4 or IPv6 addresses */
+int acl_matches_the_whole_internet(struct acl_options *acl);
 /* clean up options */
 void nsd_options_destroy(struct nsd_options* opt);
 /* replace occurrences of one with two in buf, pass length of buffer */
 void replace_str(char* buf, size_t len, const char* one, const char* two);
 /* apply pattern to the existing pattern in the parser */
 void config_apply_pattern(struct pattern_options *dest, const char* name);
+/* if the file is a directory, print a warning, because flex just exit()s
+ * when a fileread fails because it is a directory, helps the user figure
+ * out what just happened */
+void warn_if_directory(const char* filetype, FILE* f, const char* fname);
 
 #endif /* OPTIONS_H */

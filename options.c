@@ -9,6 +9,7 @@
 #include "config.h"
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include "options.h"
 #include "query.h"
@@ -17,7 +18,6 @@
 #include "rrl.h"
 #include "bitset.h"
 
-#include "configyyrename.h"
 #include "configparser.h"
 config_parser_state_type* cfg_parser = 0;
 extern FILE* c_in, *c_out;
@@ -162,6 +162,20 @@ nsd_options_insert_pattern(struct nsd_options* opt,
 	return 1;
 }
 
+void
+warn_if_directory(const char* filetype, FILE* f, const char* fname)
+{
+	if(fileno(f) != -1) {
+		struct stat st;
+		memset(&st, 0, sizeof(st));
+		if(fstat(fileno(f), &st) != -1) {
+			if(S_ISDIR(st.st_mode)) {
+				log_msg(LOG_WARNING, "trying to read %s but it is a directory: %s", filetype, fname);
+			}
+		}
+	}
+}
+
 int
 parse_options_file(struct nsd_options* opt, const char* file,
 	void (*err)(void*,const char*), void* err_arg)
@@ -199,6 +213,7 @@ parse_options_file(struct nsd_options* opt, const char* file,
 		}
 		return 0;
 	}
+	warn_if_directory("configfile", in, file);
 	c_in = in;
 	c_parse();
 	fclose(in);
@@ -1435,6 +1450,16 @@ key_options_add_modify(struct nsd_options* opt, struct key_options* key)
 }
 
 int
+acl_transport_matches(struct acl_options* acl, struct query* q)
+{
+       if(acl->use_xot_only && q->tcp != 2) {
+	       DEBUG(DEBUG_XFRD,2, (LOG_INFO, "transportmatch fail not on tls"));
+	       return 0;
+       }
+       return 1;
+}
+
+int
 acl_check_incoming(struct acl_options* acl, struct query* q,
 	struct acl_options** reason)
 {
@@ -1451,10 +1476,12 @@ acl_check_incoming(struct acl_options* acl, struct query* q,
 
 	while(acl)
 	{
-		DEBUG(DEBUG_XFRD,2, (LOG_INFO, "testing acl %s %s",
+		DEBUG(DEBUG_XFRD,2, (LOG_INFO, "testing acl %s %s%s",
 			acl->ip_address_spec, acl->nokey?"NOKEY":
-			(acl->blocked?"BLOCKED":acl->key_name)));
-		if(acl_addr_matches(acl, q) && acl_key_matches(acl, q)) {
+			(acl->blocked?"BLOCKED":acl->key_name),
+			acl->use_xot_only?" xot-only":""));
+		if(acl_addr_matches(acl, q) && acl_key_matches(acl, q)
+		&& acl_transport_matches(acl, q)) {
 			if(!match)
 			{
 				match = acl; /* remember first match */
@@ -1998,6 +2025,34 @@ parse_acl_info(region_type* region, char* ip, const char* key)
 		acl->key_name = region_strdup(region, key);
 	}
 	return acl;
+}
+
+int acl_matches_the_whole_internet(struct acl_options *acl)
+{
+#ifdef INET6
+	static const uint8_t zeros[IP6ADDRLEN] =
+	    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+	    , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+	static const uint8_t ones[IP6ADDRLEN] =
+	    { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+	    , 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+#endif
+
+	if (acl->rangetype == acl_range_single)
+		return 0;
+#ifdef INET6
+	if (acl->is_ipv6)
+		return memcmp(&acl->addr.addr6, zeros, IP6ADDRLEN)
+		     ? 0
+		     : acl->rangetype == acl_range_minmax
+		     ? !memcmp(&acl->range_mask.addr6,  ones, IP6ADDRLEN)
+		     : !memcmp(&acl->range_mask.addr6, zeros, IP6ADDRLEN);
+#endif
+	return (*(uint32_t *)&acl->addr.addr != 0)
+	     ? 0
+	     : acl->rangetype == acl_range_minmax
+	     ? *(uint32_t *)&acl->range_mask.addr == 0xFFFFFFFFUL
+	     : *(uint32_t *)&acl->range_mask.addr == 0;
 }
 
 /* copy acl list at end of parser start, update current */
